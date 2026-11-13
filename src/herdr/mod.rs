@@ -25,6 +25,7 @@ use tokio::time::timeout;
 const MAGIC: &str = "herdr-devtunnel/1";
 const HANDSHAKE_LIMIT: usize = 4096;
 const BRIDGE_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
+const BRIDGE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Args)]
 #[command(about = "Connect Herdr cores through owner-only private Dev Tunnels (no SSH)")]
@@ -567,55 +568,105 @@ async fn write_hello(
     Ok(())
 }
 
-async fn bridge(mut socket: TcpStream, hc: PathBuf, session: String) -> Result<()> {
-    socket.set_nodelay(true)?;
-    let hello = read_hello(&mut socket, 10).await?;
-    ensure!(
-        hello.protocol == MAGIC && hello.session == session,
-        "Wrong protocol or session"
-    );
-    let mut child = command(hc)
-        .env_remove("HC_SOCKET")
-        .args(["connect", "--session", &session])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
-        .spawn()?;
-    let mut input = child.stdin.take().context("Missing hc stdin")?;
-    let mut output = child.stdout.take().context("Missing hc stdout")?;
-    write_hello(&mut socket, &session, Some(true)).await?;
-    let (mut read, mut write) = socket.into_split();
-    let incoming = async {
-        tokio::io::copy(&mut read, &mut input).await?;
-        drop(input);
-        Ok::<_, anyhow::Error>(())
-    };
-    let outgoing = async {
-        tokio::io::copy(&mut output, &mut write).await?;
-        write.shutdown().await?;
-        Ok::<_, anyhow::Error>(())
-    };
+async fn bridge(
+    mut socket: TcpStream,
+    hc: PathBuf,
+    session: String,
+    mut stop: watch::Receiver<bool>,
+) -> (Result<()>, Result<()>) {
+    let mut child = None;
     let result = async {
+        socket.set_nodelay(true)?;
+        let hello = tokio::select! {
+            biased;
+            result = stopped(&mut stop) => return result,
+            result = read_hello(&mut socket, 10) => result?,
+        };
+        ensure!(
+            hello.protocol == MAGIC && hello.session == session,
+            "Wrong protocol or session"
+        );
+        if *stop.borrow() {
+            return Ok(());
+        }
+        child = Some(
+            command(hc)
+                .env_remove("HC_SOCKET")
+                .args(["connect", "--session", &session])
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::inherit())
+                .spawn()?,
+        );
+        let child = child.as_mut().expect("hc was just spawned");
+        let mut input = child.stdin.take().context("Missing hc stdin")?;
+        let mut output = child.stdout.take().context("Missing hc stdout")?;
+        tokio::select! {
+            biased;
+            result = stopped(&mut stop) => return result,
+            result = write_hello(&mut socket, &session, Some(true)) => result?,
+        }
+        let (mut read, mut write) = socket.into_split();
+        let incoming = async {
+            tokio::io::copy(&mut read, &mut input).await?;
+            drop(input);
+            Ok::<_, anyhow::Error>(())
+        };
+        let outgoing = async {
+            tokio::io::copy(&mut output, &mut write).await?;
+            write.shutdown().await?;
+            Ok::<_, anyhow::Error>(())
+        };
         // Preserve half-close responses without letting hc retain a bridge slot
         // forever after client EOF. Output EOF still ends an open-input peer.
         tokio::pin!(incoming);
         tokio::pin!(outgoing);
         tokio::select! {
+            biased;
+            result = stopped(&mut stop) => result,
             result = &mut incoming => {
                 result?;
-                timeout(BRIDGE_DRAIN_TIMEOUT, outgoing)
-                    .await
-                    .context("hc output drain timed out after client EOF")?
+                tokio::select! {
+                    biased;
+                    result = stopped(&mut stop) => result,
+                    result = timeout(BRIDGE_DRAIN_TIMEOUT, outgoing) => {
+                        result.context("hc output drain timed out after client EOF")?
+                    }
+                }
             }
             result = &mut outgoing => result,
         }
     }
     .await;
-    let cleanup = child
-        .kill()
-        .await
-        .context("Failed to stop hc bridge process");
-    result.and(cleanup)
+    let cleanup = if let Some(mut child) = child {
+        match child.try_wait() {
+            Ok(Some(_)) => Ok(()),
+            status => {
+                let kill = child
+                    .start_kill()
+                    .context("Failed to stop hc bridge process");
+                let wait = timeout(BRIDGE_CLEANUP_TIMEOUT, child.wait())
+                    .await
+                    .context("Timed out waiting for hc bridge process to exit")
+                    .and_then(|result| result.context("Failed to reap hc bridge process"));
+                match wait {
+                    Ok(_) => Ok(()),
+                    Err(error) => combine_results(
+                        combine_results(
+                            status
+                                .map(|_| ())
+                                .context("Failed to check hc bridge process"),
+                            kill,
+                        ),
+                        Err(error),
+                    ),
+                }
+            }
+        }
+    } else {
+        Ok(())
+    };
+    (result, cleanup)
 }
 
 fn tunnel_value(value: &Value) -> &Value {
@@ -971,41 +1022,73 @@ async fn serve(args: ServerArgs, reporter: &background::Reporter) -> Result<()> 
         "[herdr] Tunnel clients and trusted local processes get full hc access as this user."
     );
     let (stop, receiver) = watch::channel(false);
-    let guard = guard_host(c.clone(), &args, &matchers, reporter, receiver);
-    let bridge = accept_connections(listener, hc, c.session);
+    let guard = guard_host(c.clone(), &args, &matchers, reporter, receiver.clone());
+    let bridge = accept_connections(listener, hc, c.session, stop.clone(), receiver);
     tokio::pin!(guard, bridge);
-    let (result, guard_done) = tokio::select! {
-        result = &mut guard => (result, true),
-        result = &mut bridge => (result, false),
-        result = &mut shutdown => (result, false),
-        result = &mut requested => (result, false),
+    let (result, guard_done, bridge_done) = tokio::select! {
+        result = &mut guard => (result, true, false),
+        result = &mut bridge => (result, false, true),
+        result = &mut shutdown => (result, false, false),
+        result = &mut requested => (result, false, false),
     };
     stop.send_replace(true);
-    if guard_done {
-        result
-    } else {
-        result.and(guard.await)
+    let (guard_result, bridge_result) = match (guard_done, bridge_done) {
+        (true, false) => (Ok(()), bridge.await),
+        (false, true) => (guard.await, Ok(())),
+        (false, false) => tokio::join!(guard, bridge),
+        (true, true) => unreachable!(),
+    };
+    combine_results(combine_results(result, guard_result), bridge_result)
+}
+
+fn combine_results(first: Result<()>, second: Result<()>) -> Result<()> {
+    match (first, second) {
+        (Err(first), Err(second)) => Err(first.context(format!("Additional error: {second:#}"))),
+        (Err(error), _) | (_, Err(error)) => Err(error),
+        (Ok(()), Ok(())) => Ok(()),
     }
 }
 
-async fn accept_connections(listener: TcpListener, hc: PathBuf, session: String) -> Result<()> {
+async fn accept_connections(
+    listener: TcpListener,
+    hc: PathBuf,
+    session: String,
+    stop: watch::Sender<bool>,
+    mut receiver: watch::Receiver<bool>,
+) -> Result<()> {
     let permits = Arc::new(Semaphore::new(32));
     let mut connections = JoinSet::new();
-    loop {
+    let mut result = loop {
         tokio::select! {
+            biased;
+            result = stopped(&mut receiver) => break result,
             Some(result) = connections.join_next(), if !connections.is_empty() => {
-                result.context("Bridge task failed")?;
+                if let Err(error) = result.context("Bridge task failed").and_then(|result| result) {
+                    break Err(error);
+                }
             }
             accepted = listener.accept() => {
-                let (socket, _) = accepted?;
+                let (socket, _) = match accepted {
+                    Ok(accepted) => accepted,
+                    Err(error) => break Err(error.into()),
+                };
                 match permits.clone().try_acquire_owned() {
                     Ok(permit) => {
                         let hc = hc.clone();
                         let session = session.clone();
+                        let receiver = receiver.clone();
                         connections.spawn(async move {
                             let _permit = permit;
-                            if let Err(error) = bridge(socket, hc, session).await {
-                                eprintln!("[herdr] Bridge rejected/closed: {error:#}");
+                            let (result, cleanup) = bridge(socket, hc, session, receiver).await;
+                            match (result, cleanup) {
+                                (Err(error), Err(cleanup)) => {
+                                    Err(cleanup.context(format!("Bridge failed: {error:#}")))
+                                }
+                                (Err(error), Ok(())) => {
+                                    eprintln!("[herdr] Bridge rejected/closed: {error:#}");
+                                    Ok(())
+                                }
+                                (Ok(()), cleanup) => cleanup,
                             }
                         });
                     }
@@ -1013,7 +1096,16 @@ async fn accept_connections(listener: TcpListener, hc: PathBuf, session: String)
                 }
             }
         }
+    };
+    drop(listener);
+    stop.send_replace(true);
+    while let Some(joined) = connections.join_next().await {
+        result = combine_results(
+            result,
+            joined.context("Bridge task failed").and_then(|result| result),
+        );
     }
+    result
 }
 
 async fn stopped(stop: &mut watch::Receiver<bool>) -> Result<()> {
