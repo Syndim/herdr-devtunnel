@@ -321,10 +321,23 @@ fn process_alive(pid: &str) -> bool {
 fn wait_for_exit(pid: &str) {
     let deadline = Instant::now() + Duration::from_secs(12);
     while process_alive(pid) {
-        assert!(
-            Instant::now() < deadline,
-            "Fixture child {pid} survived its owner"
-        );
+        if Instant::now() >= deadline {
+            #[cfg(unix)]
+            let details = Command::new("ps")
+                .args(["-p", pid, "-o", "pid=,ppid=,stat=,lstart=,command="])
+                .output()
+                .map(|output| {
+                    format!(
+                        "stdout: {}\nstderr: {}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    )
+                })
+                .unwrap_or_else(|error| format!("ps failed: {error}"));
+            #[cfg(windows)]
+            let details = "inspect tasklist for process details".to_string();
+            panic!("Fixture child {pid} did not exit within 12 seconds: {details}");
+        }
         thread::sleep(Duration::from_millis(50));
     }
 }
@@ -337,7 +350,10 @@ fn binary_help_identifies_hd() {
         .unwrap();
     success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Usage: hd "), "{stdout}");
+    assert!(
+        stdout.contains(&format!("Usage: hd{} ", std::env::consts::EXE_SUFFIX)),
+        "{stdout}"
+    );
 }
 
 #[test]
