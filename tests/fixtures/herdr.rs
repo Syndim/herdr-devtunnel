@@ -255,6 +255,15 @@ fn main() {
                 api(&root, &args);
                 return;
             }
+            if std::env::var_os("HERDR_TEST_FIXTURE_HC_GUARD").is_some() {
+                let guard = root.join("hc-guard");
+                thread::spawn(move || {
+                    while guard.is_file() {
+                        thread::sleep(Duration::from_millis(25));
+                    }
+                    std::process::exit(0);
+                });
+            }
             writeln!(
                 std::fs::OpenOptions::new()
                     .create(true)

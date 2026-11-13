@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use super::{Connection, ServerArgs, executable, parse_machine, serve};
+use super::{Connection, ServerArgs, combine_results, executable, parse_machine, serve};
 use crate::dt::{background as lifecycle, build_failure_matchers};
 
 #[derive(Args)]
@@ -320,6 +320,18 @@ fn stop_in_directory(name: &str, directory: &Path) -> Result<()> {
         );
         thread::sleep(Duration::from_millis(100));
     }
+    let state = read_state(directory)?.with_context(|| {
+        format!(
+            "Server '{name}' exited without a final status; shutdown is not confirmed. See {}",
+            directory.join("server.log").display()
+        )
+    })?;
+    ensure!(
+        !state.ready && state.message == "stopped",
+        "Server '{name}' did not stop cleanly: {}. See {}",
+        state.message,
+        directory.join("server.log").display()
+    );
     println!("Server '{name}' stopped.");
     Ok(())
 }
@@ -406,13 +418,127 @@ pub(super) async fn worker(args: WorkerArgs) -> Result<()> {
     reporter.update(&config.connection, false, 0, "starting")?;
     let result = serve(config, &reporter).await;
     let status = reporter.finish(&result);
-    result.and(status)
+    combine_results(result, status)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::startup_timeout;
-    use std::time::Duration;
+    use super::{
+        Reporter, State, lifecycle, read_state, startup_timeout, stop_in_directory, write_state,
+    };
+    use std::fs;
+    use std::thread;
+    use std::time::{Duration, Instant};
+
+    #[test]
+    fn stop_requires_a_clean_final_state() {
+        for outcome in ["stopped", "failed", "missing", "unfinished"] {
+            let directory =
+                std::env::temp_dir().join(format!("herdr-stop-{:032x}", rand::random::<u128>()));
+            fs::create_dir(&directory).unwrap();
+            write_state(
+                &directory,
+                &State {
+                    pid: std::process::id(),
+                    tunnel: "test".into(),
+                    port: 1234,
+                    session: "test".into(),
+                    ready: true,
+                    restarts: 0,
+                    message: "ready".into(),
+                },
+            )
+            .unwrap();
+            let lock = lifecycle::try_lock(&directory.join("worker.lock"))
+                .unwrap()
+                .unwrap();
+            let worker_directory = directory.clone();
+            let worker = thread::spawn(move || {
+                let _lock = lock;
+                let started = Instant::now();
+                while !worker_directory.join("stop").exists() {
+                    assert!(started.elapsed() < Duration::from_secs(10));
+                    thread::sleep(Duration::from_millis(10));
+                }
+                let reporter = Reporter {
+                    directory: Some(worker_directory.clone()),
+                };
+                match outcome {
+                    "stopped" => reporter.finish(&Ok(())).unwrap(),
+                    "failed" => reporter
+                        .finish(&Err(anyhow::anyhow!("child cleanup failed")))
+                        .unwrap(),
+                    "missing" => fs::remove_file(worker_directory.join("state.json")).unwrap(),
+                    "unfinished" => {}
+                    _ => unreachable!(),
+                }
+            });
+            let result = stop_in_directory("test", &directory);
+            worker.join().unwrap();
+            match outcome {
+                "stopped" => assert!(result.is_ok()),
+                "failed" => {
+                    assert!(format!("{:#}", result.unwrap_err()).contains("child cleanup failed"))
+                }
+                "missing" => {
+                    assert!(format!("{:#}", result.unwrap_err()).contains("without a final status"))
+                }
+                "unfinished" => {
+                    assert!(format!("{:#}", result.unwrap_err()).contains("did not stop cleanly"))
+                }
+                _ => unreachable!(),
+            }
+            fs::remove_dir_all(directory).unwrap();
+        }
+    }
+
+    #[test]
+    fn stop_ignores_saved_failures_when_not_running() {
+        let directory = std::env::temp_dir().join(format!(
+            "herdr-stop-idle-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&directory).unwrap();
+        assert!(stop_in_directory("test", &directory).is_ok());
+        write_state(
+            &directory,
+            &State {
+                pid: std::process::id(),
+                tunnel: "test".into(),
+                port: 1234,
+                session: "test".into(),
+                ready: false,
+                restarts: 0,
+                message: "failed: earlier error".into(),
+            },
+        )
+        .unwrap();
+        assert!(stop_in_directory("test", &directory).is_ok());
+        assert_eq!(
+            read_state(&directory).unwrap().unwrap().message,
+            "failed: earlier error"
+        );
+        assert!(!directory.join("stop").exists());
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn worker_result_keeps_serve_and_reporter_errors() {
+        let directory = std::env::temp_dir().join(format!(
+            "herdr-finish-{:032x}",
+            rand::random::<u128>()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let reporter = Reporter {
+            directory: Some(directory.clone()),
+        };
+        let result = Err(anyhow::anyhow!("child cleanup failed"));
+        let status = reporter.finish(&result);
+        let error = format!("{:#}", super::combine_results(result, status).unwrap_err());
+        assert!(error.contains("child cleanup failed"));
+        assert!(error.contains("Missing managed Herdr state"));
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn startup_budget_covers_provisioning_readiness_and_retries() {

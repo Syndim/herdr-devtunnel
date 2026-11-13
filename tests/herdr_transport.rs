@@ -88,6 +88,7 @@ impl Fixture {
             "HERDR_TEST_FIXTURE_CREATED_CLUSTER",
             "HERDR_TEST_FIXTURE_EARLY_CLOSE",
             "HERDR_TEST_FIXTURE_HANG_AFTER_EOF",
+            "HERDR_TEST_FIXTURE_HC_GUARD",
             "HERDR_TEST_FIXTURE_HOST_MODE",
             "HERDR_TEST_FIXTURE_LEGACY_HC",
             "HERDR_TEST_FIXTURE_REQUIRE_NO_HC_SOCKET",
@@ -188,6 +189,14 @@ fn reserve_port() -> TcpListener {
             ports.push(port);
             return listener;
         }
+    }
+}
+
+struct HcGuard(PathBuf);
+
+impl Drop for HcGuard {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.0);
     }
 }
 
@@ -305,6 +314,11 @@ fn process_alive(pid: &str) -> bool {
             .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
             .output()
             .unwrap();
+        assert!(
+            result.status.success(),
+            "tasklist failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
         String::from_utf8_lossy(&result.stdout).contains(&format!("\"{pid}\""))
     }
     #[cfg(unix)]
@@ -321,10 +335,23 @@ fn process_alive(pid: &str) -> bool {
 fn wait_for_exit(pid: &str) {
     let deadline = Instant::now() + Duration::from_secs(12);
     while process_alive(pid) {
-        assert!(
-            Instant::now() < deadline,
-            "Fixture child {pid} survived its owner"
-        );
+        if Instant::now() >= deadline {
+            #[cfg(unix)]
+            let details = Command::new("ps")
+                .args(["-p", pid, "-o", "pid=,ppid=,stat=,lstart=,command="])
+                .output()
+                .map(|output| {
+                    format!(
+                        "stdout: {}\nstderr: {}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    )
+                })
+                .unwrap_or_else(|error| format!("ps failed: {error}"));
+            #[cfg(windows)]
+            let details = "inspect tasklist for process details".to_string();
+            panic!("Fixture child {pid} did not exit within 12 seconds: {details}");
+        }
         thread::sleep(Duration::from_millis(50));
     }
 }
@@ -337,7 +364,10 @@ fn binary_help_identifies_hd() {
         .unwrap();
     success(&output);
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("Usage: hd "), "{stdout}");
+    assert!(
+        stdout.contains(&format!("Usage: hd{} ", std::env::consts::EXE_SUFFIX)),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -1259,8 +1289,12 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
 #[test]
 fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
     let fixture = Fixture::new();
+    let guard = HcGuard(fixture.root.join("hc-guard"));
+    fs::write(&guard.0, b"").unwrap();
     let mut command = fixture.connection("server");
-    command.env("HERDR_TEST_FIXTURE_HANG_AFTER_EOF", "1");
+    command
+        .env("HERDR_TEST_FIXTURE_HANG_AFTER_EOF", "1")
+        .env("HERDR_TEST_FIXTURE_HC_GUARD", "1");
     success(&command.output().unwrap());
 
     let mut sockets = Vec::new();
@@ -1278,7 +1312,6 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
         socket.read_line(&mut hello).unwrap();
         let hello: serde_json::Value = serde_json::from_str(&hello).unwrap();
         assert_eq!(hello["ok"], true);
-        socket.get_mut().shutdown(Shutdown::Write).unwrap();
         let mut probe = [0; 5];
         socket.read_exact(&mut probe).unwrap();
         assert_eq!(&probe, b"probe");
@@ -1286,6 +1319,9 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
     }
     let pids = fs::read_to_string(fixture.root.join("hc-connections")).unwrap();
     assert_eq!(pids.lines().count(), 32);
+    for socket in &mut sockets {
+        socket.get_mut().shutdown(Shutdown::Write).unwrap();
+    }
     for mut socket in sockets {
         let mut trailing = Vec::new();
         socket.read_to_end(&mut trailing).unwrap();
@@ -1317,6 +1353,104 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
     let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
     success(&fixture.command("stop").output().unwrap());
     wait_for_exit(replacement_pid);
+    wait_for_exit(&host_pid);
+}
+
+#[test]
+fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
+    let fixture = Fixture::new();
+    let guard = HcGuard(fixture.root.join("hc-guard"));
+    fs::write(&guard.0, b"").unwrap();
+    let mut command = fixture.connection("server");
+    command
+        .env("HERDR_TEST_FIXTURE_HANG_AFTER_EOF", "1")
+        .env("HERDR_TEST_FIXTURE_HC_GUARD", "1");
+    success(&command.output().unwrap());
+
+    let worker_pid = fixture.state()["pid"].as_u64().unwrap().to_string();
+    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    assert_eq!(fixture.state()["ready"], true);
+    assert!(process_alive(&worker_pid));
+    assert!(process_alive(&host_pid));
+    let socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut socket = BufReader::new(socket);
+    socket
+        .get_mut()
+        .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\nprobe")
+        .unwrap();
+    let mut hello = String::new();
+    socket.read_line(&mut hello).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&hello).unwrap()["ok"],
+        true
+    );
+    let mut probe = [0; 5];
+    socket.read_exact(&mut probe).unwrap();
+    assert_eq!(&probe, b"probe");
+    let connections = fs::read_to_string(fixture.root.join("hc-connections")).unwrap();
+    let mut pids = connections.lines();
+    let hc_pid = pids.next().unwrap();
+    assert!(pids.next().is_none());
+    assert!(process_alive(hc_pid));
+
+    let mut pending = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    pending.write_all(b"{\"protocol\":").unwrap();
+    pending
+        .set_read_timeout(Some(Duration::from_millis(200)))
+        .unwrap();
+    let mut byte = [0; 1];
+    let error = pending.peek(&mut byte).unwrap_err();
+    assert!(
+        matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ),
+        "{error}"
+    );
+    pending
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("hc-connections")).unwrap(),
+        connections
+    );
+    assert!(process_alive(hc_pid));
+
+    let stopped = fixture
+        .command("stop")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    for connection in [&mut pending as &mut dyn Read, &mut socket as &mut dyn Read] {
+        match connection.read(&mut byte) {
+            Ok(count) => assert_eq!(count, 0),
+            Err(error) => assert!(
+                matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ),
+                "{error}"
+            ),
+        }
+    }
+    let stopped = stopped.wait_with_output().unwrap();
+    success(&stopped);
+    assert!(String::from_utf8_lossy(&stopped.stdout).contains("Server 'default' stopped."));
+    assert!(
+        !process_alive(hc_pid),
+        "hc child {hc_pid} survived successful stop"
+    );
+    assert_eq!(fixture.state()["ready"], false);
+    assert_eq!(fixture.state()["message"], "stopped");
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("hc-connections")).unwrap(),
+        connections
+    );
+    wait_for_exit(&worker_pid);
     wait_for_exit(&host_pid);
 }
 
