@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - master
+  merge_group:
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: 1.89.0
+
+jobs:
+  linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Test
+        run: cargo test --locked
+
+  macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Test
+        run: cargo test --locked
+
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Test
+        run: cargo test --locked
+
+  required:
+    name: required
+    if: always()
+    needs: [linux, macos, windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check test results
+        env:
+          LINUX_RESULT: ${{ needs.linux.result }}
+          MACOS_RESULT: ${{ needs.macos.result }}
+          WINDOWS_RESULT: ${{ needs.windows.result }}
+        run: test "$LINUX_RESULT" = success && test "$MACOS_RESULT" = success && test "$WINDOWS_RESULT" = success
