@@ -3,6 +3,9 @@ name = "herdr-devtunnel"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
+description = "Connect Herdr cores through private Microsoft Dev Tunnels"
+license = "MIT"
+repository = "https://github.com/Syndim/herdr-devtunnel"
 
 [[bin]]
 name = "hd"

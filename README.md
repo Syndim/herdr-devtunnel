@@ -134,6 +134,6 @@ Build with `cargo build`. To run fixture tests without network access, first cac
 
 The integration targets Windows, macOS, and Linux, but builds and fixture tests do not establish real cross-machine compatibility. Before relying on it, validate actual login, tunnel hosting and connection, platform-specific `--via` invocation, App visibility, interactive agent approvals, Unicode, reconnect, and session persistence on the deployment machines.
 
-## License notice
+## License
 
-This distribution includes material covered by the MIT notice in [LICENSES/herdr-devtunnel.txt](LICENSES/herdr-devtunnel.txt). Include that notice with copies or substantial portions of the covered material.
+MIT; see [LICENSE](LICENSE). Include the copyright and permission notice with copies or substantial portions of the software.
