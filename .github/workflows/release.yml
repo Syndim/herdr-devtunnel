@@ -1,0 +1,502 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - '**'
+
+permissions:
+  contents: read
+
+env:
+  RUSTUP_TOOLCHAIN: 1.89.0
+
+concurrency:
+  group: release-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
+      prerelease: ${{ steps.tag.outputs.prerelease }}
+      commit: ${{ steps.tag.outputs.commit }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Validate tag and master ancestry
+        id: tag
+        env:
+          TAG: ${{ github.ref_name }}
+          READ_TOKEN: ${{ github.token }}
+          EVENT_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import re
+          import tomllib
+
+          with open('Cargo.toml', 'rb') as f:
+              package = tomllib.load(f)['package']
+          version = package['version']
+          if package['name'] != 'herdr-devtunnel':
+              raise SystemExit('::error::Unexpected package name; refusing to publish a different crate.')
+          semver = r'(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?'
+          match = re.fullmatch(semver, version)
+          if not match or (match.group(4) and any(len(p) > 1 and p[0] == '0' and p.isdigit() for p in match.group(4).split('.'))):
+              raise SystemExit('::error::Manifest version is not a valid semantic version.')
+          tag = os.environ['TAG']
+          if tag not in (version, 'v' + version):
+              raise SystemExit(f'::error::Tag {tag!r} does not match manifest version {version!r}.')
+          if not package.get('description') or not (package.get('license') or package.get('license-file')):
+              raise SystemExit('::error::crates.io requires a package description and license or license-file in Cargo.toml.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print(f'version={version}', file=output)
+              print(f'prerelease={str(bool(match.group(4))).lower()}', file=output)
+          PY
+          head_commit=$(git rev-parse --verify 'HEAD^{commit}')
+          if [ "$head_commit" != "$EVENT_COMMIT" ]; then
+            echo '::error::Checkout does not match the event commit.'
+            exit 1
+          fi
+          origin=$(git remote get-url origin)
+          case "$origin" in
+            "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY"|"$GITHUB_SERVER_URL/$GITHUB_REPOSITORY.git") ;;
+            *) echo '::error::Unexpected origin URL.'; exit 1 ;;
+          esac
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="http.${GITHUB_SERVER_URL}/.extraheader"
+          GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $(printf 'x-access-token:%s' "$READ_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_VALUE_0
+          remote_refs=$(git ls-remote origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          unset GIT_CONFIG_COUNT GIT_CONFIG_KEY_0 GIT_CONFIG_VALUE_0 READ_TOKEN
+          export REMOTE_REFS="$remote_refs"
+          python3 - <<'PY'
+          import os
+          import re
+
+          ref = 'refs/tags/' + os.environ['TAG']
+          refs = {}
+          for line in os.environ['REMOTE_REFS'].splitlines():
+              sha, name = line.split('\t')
+              if name not in (ref, ref + '^{}') or name in refs or not re.fullmatch(r'[0-9a-f]{40}', sha):
+                  raise SystemExit('::error::Unexpected or duplicate remote tag ref.')
+              refs[name] = sha
+          if ref not in refs or refs.get(ref + '^{}', refs[ref]) != os.environ['EVENT_COMMIT']:
+              raise SystemExit('::error::Remote tag is missing or differs from the event commit.')
+          PY
+          if ! git merge-base --is-ancestor "$head_commit" refs/remotes/origin/master; then
+            echo '::error::The tag target is not an ancestor of origin/master.'
+            exit 1
+          fi
+          echo "commit=$head_commit" >> "$GITHUB_OUTPUT"
+
+  ci:
+    needs: validate
+    permissions:
+      contents: read
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: [validate, ci]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            executable: hd
+            format: tar.gz
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+            executable: hd
+            format: tar.gz
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            executable: hd
+            format: tar.gz
+          - runner: windows-2022
+            target: x86_64-pc-windows-msvc
+            executable: hd.exe
+            format: zip
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+      - name: Install Rust
+        shell: bash
+        run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Build release binary
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXECUTABLE: ${{ matrix.executable }}
+        run: |
+          set -euo pipefail
+          cargo build --locked --release --target "$TARGET"
+          "target/$TARGET/release/$EXECUTABLE" --help
+      - name: Package binary and notices
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+          EXECUTABLE: ${{ matrix.executable }}
+          FORMAT: ${{ matrix.format }}
+        run: |
+          set -euo pipefail
+          name="herdr-devtunnel-${TARGET}"
+          mkdir -p "dist/$name"
+          cp "target/$TARGET/release/$EXECUTABLE" "dist/$name/"
+          cp README.md LICENSE "dist/$name/"
+          cp -R LICENSES "dist/$name/"
+          if [ "$FORMAT" = zip ]; then
+            (cd dist && 7z a -tzip "$name.zip" "$name" >/dev/null)
+            7z t "dist/$name.zip" >/dev/null
+          else
+            tar -C dist -czf "dist/$name.tar.gz" "$name"
+            tar -tzf "dist/$name.tar.gz" >/dev/null
+          fi
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/*.${{ matrix.format }}
+          if-no-files-found: error
+
+  package-check:
+    needs: [validate, ci]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      checksum: ${{ steps.package.outputs.checksum }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit }}
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Verify crate without credentials
+        id: package
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          cargo publish --dry-run --locked --registry crates-io
+          shopt -s nullglob
+          crates=(target/package/*.crate)
+          if [ "${#crates[@]}" -ne 1 ] || [ "${crates[0]}" != "target/package/herdr-devtunnel-$VERSION.crate" ] || [ ! -f "${crates[0]}" ]; then
+            echo '::error::Expected exactly one crate with the validated package name and version.'
+            exit 1
+          fi
+          checksum=$(sha256sum "${crates[0]}")
+          echo "checksum=${checksum%% *}" >> "$GITHUB_OUTPUT"
+
+  draft:
+    needs: [validate, ci, build, package-check]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: release
+    permissions:
+      contents: write
+    outputs:
+      id: ${{ steps.create.outputs.id }}
+      checksums: ${{ steps.create.outputs.checksums }}
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+          digest-mismatch: error
+      - name: Check tag, create draft and record asset hashes
+        id: create
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import time
+          from urllib.parse import quote
+
+          repo, tag = os.environ['GH_REPO'], os.environ['TAG']
+          prefix = f'repos/{repo}'
+          names = [
+              'herdr-devtunnel-x86_64-unknown-linux-gnu.tar.gz',
+              'herdr-devtunnel-x86_64-apple-darwin.tar.gz',
+              'herdr-devtunnel-aarch64-apple-darwin.tar.gz',
+              'herdr-devtunnel-x86_64-pc-windows-msvc.zip',
+          ]
+
+          def api(*args):
+              for attempt in range(3):
+                  try:
+                      return json.loads(subprocess.check_output(['gh', 'api', *args]))
+                  except (subprocess.CalledProcessError, json.JSONDecodeError):
+                      if attempt == 2:
+                          raise
+                      time.sleep(2)
+
+          def check_tag():
+              ref = quote('refs/tags/' + tag, safe='')
+              commit = api(f'{prefix}/commits/{ref}').get('sha')
+              if commit != os.environ['EXPECTED_COMMIT']:
+                  raise SystemExit('::error::Remote tag no longer points at the event commit.')
+
+          def releases():
+              pages = api('--paginate', '--slurp', f'{prefix}/releases?per_page=100')
+              return [item for page in pages for item in page if item['tag_name'] == tag]
+
+          dist = Path('dist')
+          if {p.name for p in dist.iterdir()} != set(names) or not all((dist / n).is_file() for n in names):
+              raise SystemExit('::error::Build artifacts do not have the exact expected names.')
+          hashes = {n: hashlib.sha256((dist / n).read_bytes()).hexdigest() for n in names}
+          sums = ''.join(f'{hashes[n]}  {n}\n' for n in sorted(names)).encode()
+          (dist / 'SHA256SUMS').write_bytes(sums)
+          hashes['SHA256SUMS'] = hashlib.sha256(sums).hexdigest()
+          if releases():
+              raise SystemExit('::error::A release or draft already uses this tag; inspect it before retrying.')
+          check_tag()
+          try:
+              created = json.loads(subprocess.check_output([
+                  'gh', 'api', '--method', 'POST', f'{prefix}/releases',
+                  '-f', f'tag_name={tag}', '-f', f'name={tag}',
+                  '-F', 'draft=true',
+                  '-F', f'prerelease={os.environ["PRERELEASE"]}', '-F', 'generate_release_notes=true',
+              ]))
+              release_id = created['id']
+              if type(release_id) is not int or release_id <= 0 or created['tag_name'] != tag or created['draft'] is not True or created['prerelease'] != (os.environ['PRERELEASE'] == 'true'):
+                  raise ValueError('Unexpected created release')
+              upload_url = created['upload_url']
+              expected_upload = f'https://uploads.github.com/{prefix}/releases/{release_id}/assets{{?name,label}}'
+              if upload_url != expected_upload:
+                  raise ValueError('Unexpected asset upload URL')
+              for name in [*names, 'SHA256SUMS']:
+                  endpoint = upload_url.split('{', 1)[0] + '?name=' + quote(name, safe='')
+                  uploaded = json.loads(subprocess.check_output([
+                      'gh', 'api', '--method', 'POST', '-H', 'Content-Type: application/octet-stream',
+                      endpoint, '--input', str(dist / name),
+                  ]))
+                  if uploaded.get('name') != name or uploaded.get('state') != 'uploaded' or uploaded.get('digest') != 'sha256:' + hashes[name]:
+                      raise ValueError(f'Upload verification failed for {name}')
+          except (subprocess.CalledProcessError, json.JSONDecodeError, KeyError, ValueError):
+              raise SystemExit('::error::Draft creation or upload failed or is uncertain. Inspect existing drafts and assets before retrying; no crate was published.')
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+              print(f'id={release_id}', file=output)
+              print('checksums=' + json.dumps(hashes, separators=(',', ':'), sort_keys=True), file=output)
+          PY
+      - name: Verify the recorded draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_ID: ${{ steps.create.outputs.id }}
+          CHECKSUMS: ${{ steps.create.outputs.checksums }}
+        run: &verify |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import time
+          from urllib.parse import quote
+
+          repo, tag = os.environ['GH_REPO'], os.environ['TAG']
+          prefix = f'repos/{repo}'
+          release_id = os.environ['RELEASE_ID']
+          if not re.fullmatch(r'[1-9][0-9]*', release_id):
+              raise SystemExit('::error::Missing or invalid recorded release ID.')
+          expected = json.loads(os.environ['CHECKSUMS'])
+          names = {
+              'herdr-devtunnel-x86_64-unknown-linux-gnu.tar.gz',
+              'herdr-devtunnel-x86_64-apple-darwin.tar.gz',
+              'herdr-devtunnel-aarch64-apple-darwin.tar.gz',
+              'herdr-devtunnel-x86_64-pc-windows-msvc.zip',
+              'SHA256SUMS',
+          }
+          if set(expected) != names or any(not re.fullmatch(r'[0-9a-f]{64}', v) for v in expected.values()):
+              raise SystemExit('::error::Invalid recorded asset hashes.')
+
+          def api(*args):
+              for attempt in range(3):
+                  try:
+                      return json.loads(subprocess.check_output(['gh', 'api', *args]))
+                  except (subprocess.CalledProcessError, json.JSONDecodeError):
+                      if attempt == 2:
+                          raise
+                      time.sleep(2)
+
+          def pages(endpoint):
+              return [item for page in api('--paginate', '--slurp', endpoint) for item in page]
+
+          for attempt in range(5):
+              matches = [r for r in pages(f'{prefix}/releases?per_page=100') if r['tag_name'] == tag]
+              if matches or attempt == 4:
+                  break
+              time.sleep(2)
+          if len(matches) != 1 or matches[0]['id'] != int(release_id):
+              raise SystemExit('::error::Missing, replaced or duplicate release for this tag.')
+          release = api(f'{prefix}/releases/{release_id}')
+          if release['id'] != int(release_id) or release['tag_name'] != tag or release['draft'] is not True or release['prerelease'] != (os.environ['PRERELEASE'] == 'true'):
+              raise SystemExit('::error::Recorded release ID, tag, draft or prerelease state changed.')
+          assets = pages(f'{prefix}/releases/{release_id}/assets?per_page=100')
+          if len(assets) != len(names) or {a['name'] for a in assets} != names:
+              raise SystemExit('::error::Release assets differ from the expected set.')
+          for asset in assets:
+              if asset['state'] != 'uploaded' or asset.get('digest') != 'sha256:' + expected[asset['name']]:
+                  raise SystemExit('::error::Release asset state or digest differs from the recorded upload.')
+          commit = api(f'{prefix}/commits/{quote("refs/tags/" + tag, safe="")}').get('sha')
+          if commit != os.environ['EXPECTED_COMMIT']:
+              raise SystemExit('::error::Remote tag no longer points at the event commit.')
+          PY
+
+  publish:
+    needs: [validate, ci, build, package-check, draft]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: release
+    concurrency:
+      group: crates-io-${{ github.repository }}-${{ needs.validate.outputs.version }}
+      cancel-in-progress: false
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate.outputs.commit }}
+      - name: Install Rust
+        run: rustup toolchain install 1.89.0 --profile minimal
+      - name: Compare crate without credentials
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+          EXPECTED_CHECKSUM: ${{ needs.package-check.outputs.checksum }}
+        run: |
+          set -euo pipefail
+          cargo package --locked --no-verify
+          shopt -s nullglob
+          crates=(target/package/*.crate)
+          if [ "${#crates[@]}" -ne 1 ] || [ "${crates[0]}" != "target/package/herdr-devtunnel-$VERSION.crate" ] || [ ! -f "${crates[0]}" ]; then
+            echo '::error::Expected exactly one crate with the validated package name and version.'
+            exit 1
+          fi
+          checksum=$(sha256sum "${crates[0]}")
+          if [[ ! "$EXPECTED_CHECKSUM" =~ ^[0-9a-f]{64}$ ]] || [ "${checksum%% *}" != "$EXPECTED_CHECKSUM" ]; then
+            echo '::error::Packaged crate does not match the verified crate.'
+            exit 1
+          fi
+      - name: Verify draft and remote tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_ID: ${{ needs.draft.outputs.id }}
+          CHECKSUMS: ${{ needs.draft.outputs.checksums }}
+        run: *verify
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CRATES_IO_TOKEN }}
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CARGO_REGISTRY_TOKEN" ]; then
+            echo '::error::CRATES_IO_TOKEN is not configured; the GitHub release remains a draft.'
+            exit 1
+          fi
+          if ! cargo publish --locked --registry crates-io --no-verify; then
+            echo "::error::Publish failed or timed out for herdr-devtunnel $VERSION. Check crates.io before retrying: uploads are irreversible and may have succeeded despite a timeout. Compare any existing crate with this tag; never overwrite or silently accept a mismatch. If it matches, finish the draft release manually; if absent, retry this failed job."
+            exit 1
+          fi
+
+  release:
+    needs: [validate, draft, publish]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release
+    permissions:
+      contents: write
+    steps:
+      - name: Verify draft and remote tag
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          EXPECTED_COMMIT: ${{ needs.validate.outputs.commit }}
+          RELEASE_ID: ${{ needs.draft.outputs.id }}
+          CHECKSUMS: ${{ needs.draft.outputs.checksums }}
+        run: *verify
+      - name: Publish recorded draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_ID: ${{ needs.draft.outputs.id }}
+          TAG: ${{ github.ref_name }}
+          PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+          CHECKSUMS: ${{ needs.draft.outputs.checksums }}
+        run: |
+          set -euo pipefail
+          trap 'echo "::error::The crate was published, but the release update or verification failed. Inspect the recorded release, tag and assets before retrying; do not republish the crate."' ERR
+          python3 - <<'PY'
+          import json
+          import os
+          import re
+          import subprocess
+          import time
+
+          prefix = f'repos/{os.environ["GH_REPO"]}'
+          release_id = os.environ['RELEASE_ID']
+          tag = os.environ['TAG']
+          prerelease = os.environ['PRERELEASE'] == 'true'
+          expected = json.loads(os.environ['CHECKSUMS'])
+          names = {
+              'herdr-devtunnel-x86_64-unknown-linux-gnu.tar.gz',
+              'herdr-devtunnel-x86_64-apple-darwin.tar.gz',
+              'herdr-devtunnel-aarch64-apple-darwin.tar.gz',
+              'herdr-devtunnel-x86_64-pc-windows-msvc.zip',
+              'SHA256SUMS',
+          }
+          if not re.fullmatch(r'[1-9][0-9]*', release_id) or set(expected) != names or any(not re.fullmatch(r'[0-9a-f]{64}', v) for v in expected.values()):
+              raise SystemExit('::error::Invalid recorded release ID or asset hashes.')
+          release = json.loads(subprocess.check_output([
+              'gh', 'api', '--method', 'PATCH', f'{prefix}/releases/{release_id}',
+              '-f', f'tag_name={tag}', '-F', 'draft=false', '-f', f'make_latest={"false" if prerelease else "legacy"}',
+          ]))
+          if release['id'] != int(release_id) or release['tag_name'] != tag or release['draft'] is not False or release['prerelease'] is not prerelease:
+              raise SystemExit('::error::Published release ID, tag, draft or prerelease state is unexpected.')
+          for attempt in range(3):
+              try:
+                  pages = json.loads(subprocess.check_output([
+                      'gh', 'api', '--paginate', '--slurp', f'{prefix}/releases/{release_id}/assets?per_page=100',
+                  ]))
+                  break
+              except (subprocess.CalledProcessError, json.JSONDecodeError):
+                  if attempt == 2:
+                      raise
+                  time.sleep(2)
+          assets = [asset for page in pages for asset in page]
+          if len(assets) != len(names) or {a['name'] for a in assets} != names:
+              raise SystemExit('::error::Published release assets differ from the expected set.')
+          for asset in assets:
+              if asset['state'] != 'uploaded' or asset.get('digest') != 'sha256:' + expected[asset['name']]:
+                  raise SystemExit('::error::Published release asset state or digest differs from the recorded upload.')
+          PY
