@@ -33,10 +33,17 @@ fn hook(input: &str, in_herdr: bool) -> Output {
 }
 
 fn hook_event(event: &str, input: &str, in_herdr: bool) -> Output {
+    run_hook(event, input, in_herdr, false)
+}
+
+fn run_hook(event: &str, input: &str, in_herdr: bool, legacy: bool) -> Output {
     let home = Home::new();
     let mut command = Command::new(env!("CARGO_BIN_EXE_hd"));
+    if legacy {
+        command.arg("herdr");
+    }
     command
-        .args(["herdr", "copilot-status", event])
+        .args(["copilot-status", event])
         .env("HOME", &home.0)
         .env("USERPROFILE", &home.0)
         .current_dir(&home.0)
@@ -96,6 +103,23 @@ fn foreground_stop_does_not_open_or_write_a_terminal() {
         assert!(output.stdout.is_empty());
         assert!(output.stderr.is_empty());
     }
+}
+
+#[test]
+fn legacy_copilot_status_hook_remains_compatible() {
+    let output = run_hook("agentStop", "not JSON", false, true);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let output = run_hook("agentStop", r#"{"agentId":"child"}"#, true, true);
+    assert!(output.status.success(), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let output = run_hook("agentStop", "not JSON", true, true);
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Read Copilot hook JSON"));
 }
 
 #[test]

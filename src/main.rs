@@ -17,6 +17,9 @@ struct Arguments {
 
 #[derive(Subcommand)]
 enum Commands {
+    #[command(flatten)]
+    Root(herdr::Commands),
+    #[command(hide = true)]
     Herdr(herdr::Arguments),
 }
 
@@ -25,6 +28,7 @@ fn main() -> Result<()> {
         .filter_level(log::LevelFilter::Info)
         .init();
     match Arguments::parse().command {
+        Commands::Root(command) => command.run(),
         Commands::Herdr(args) => args.command.run(),
     }
 }

@@ -8,7 +8,7 @@ Install the executable on both machines from the [GitHub repository](https://git
 
 ```sh
 cargo install --locked --git https://github.com/Syndim/herdr-devtunnel.git
-hd herdr --help
+hd --help
 ```
 
 Also install Herdr Core (`hc`) and the official Microsoft Dev Tunnels CLI (`devtunnel`) on both machines. The client needs an `hc` that supports `machine add --via`; the server needs `hc connect --session`. On Unix, `hc` runs `--via` through `sh`, which must be on `PATH`. On Windows, Herdr Core 0.1.20 and later launch `--via` directly, so this tunnel does not require Git or `sh` on the Windows client. This behavior is documented for [Herdr Core 0.1.21](https://github.com/herdrdev/herdr-core/blob/v0.1.21/docs/machines.md#use-another-way-in). Other Herdr Core features may have separate shell requirements. Herdr App is optional on the client for the desktop UI.
@@ -18,9 +18,9 @@ The client emits POSIX shell quoting on Unix and Windows command-line quoting on
 Sign in to Dev Tunnels with the **same account and identity provider** on both machines. Check prerequisites and optionally start interactive browser login with:
 
 ```sh
-hd herdr setup --role server --login
-hd herdr setup --role client --login
-hd herdr doctor --role both --json
+hd setup --role server --login
+hd setup --role client --login
+hd doctor --role both --json
 ```
 
 Run the server and client setup commands on their respective machines. `--role` accepts `server`, `client`, or `both` (the default). Without `--login`, setup checks dependencies, `hc` capabilities, and login, then prints next steps; it does not install dependencies, create tunnels, or register machines. `--login` and `--json` cannot be combined. Use `--hc PATH` and `--devtunnel PATH` to select executables explicitly.
@@ -30,7 +30,7 @@ Run the server and client setup commands on their respective machines. `--role` 
 Run the server as the ordinary user who owns the projects and agent credentials:
 
 ```sh
-hd herdr server --tunnel agent-host
+hd server --tunnel agent-host
 ```
 
 Wait for successful startup and the `CLIENT COMMAND` line; use the full tunnel identifier printed there on the client. A bare name uses automatic relay selection; a name with a cluster suffix, such as `agent-host.inc1`, requests that relay when creating the tunnel. Existing tunnels are not relocated, and a mismatched relay is rejected.
@@ -40,25 +40,25 @@ The server looks up the named tunnel and creates it only on a confirmed not-foun
 By default the server is a managed background process. `serve` is an alias for `server`. Manage profiles independently:
 
 ```sh
-hd herdr status
-hd herdr stop
-hd herdr server --name workbox --tunnel agent-host
-hd herdr status --name workbox
-hd herdr stop --name workbox
+hd status
+hd stop
+hd server --name workbox --tunnel agent-host
+hd status --name workbox
+hd stop --name workbox
 ```
 
 The default profile is `default`. Starting a compatible running profile leaves it unchanged; stop it before changing settings. State, configuration, and `server.log` belong under `~/.herdr-devtunnel/server-PROFILE`. On Unix, `HOME` must be owned by the current user and must not be group or world writable; its ancestors are checked for trusted ownership and permissions, and symlinks along the path for trusted ownership. The runtime directory must be owned by the current user and have mode `0700`; new profile directories are created with mode `0700` subject to the umask, but existing profile directory permissions are not tightened or checked for `0700`. On Windows the runtime directory is under `%USERPROFILE%\.herdr-devtunnel`; the program neither enforces nor validates private Windows ACLs. Restrict the directory's inherited and explicit ACLs, as well as those on its contents, to the intended user and necessary trusted system principals, especially on shared machines. A managed server copies the running executable to a snapshot in this directory, so stop and start the profile to load updated code. Do not modify the source executable in place while starting or reconnecting: the snapshot copy is not atomic with such updates. No service or login autostart is configured.
 
-The guard retries the Dev Tunnels host after exits, known failures, or readiness timeouts, rechecking tunnel policy before retrying. It does not restart `hc` or agents. `--cooldown 2` sets the delay in seconds; `--max-restarts 0` means unlimited retries; repeatable `--pattern REGEX` adds case-insensitive failure patterns. `--timeout` bounds setup calls and host readiness. The managed startup readiness timer is `8 * --timeout + 60` seconds and starts after the worker is spawned; earlier work, including copying the executable snapshot, is not covered by it, so it is not a bound on total startup time. If managed startup times out, it requests shutdown but does not wait to confirm that the worker has stopped; check `status` and the log before retrying. Cleanup after an interrupted startup has not been verified. Server `status` reports whether the managed worker is running, its readiness and restart count, and the last status when stopped; it does not establish client connectivity or agent health.
+The guard retries the Dev Tunnels host after exits, known failures, or readiness timeouts, rechecking tunnel policy before retrying. It does not restart `hc` or agents. `--cooldown 2` sets the delay in seconds; `--max-restarts 0` means unlimited retries; repeatable `--pattern REGEX` adds case-insensitive failure patterns. `--timeout` bounds setup calls and host readiness. The managed startup readiness timer accounts for setup, host readiness, retry cleanup, and cooldown, and starts after the worker is spawned; earlier work, including copying the executable snapshot, is not covered by it, so it is not a bound on total startup time. If managed startup times out, it requests shutdown but does not wait to confirm that the worker has stopped; check `status` and the log before retrying. Cleanup after an interrupted startup has not been verified. Server `status` reports whether the managed worker is running, its readiness and restart count, and the last status when stopped; it does not establish client connectivity or agent health.
 
-For attached troubleshooting, use `hd herdr server --foreground --tunnel agent-host` and stop it with Ctrl+C. Foreground servers are not controlled by `status` or `stop`. Stopping a server closes bridge connections and the tunnel host, but does not intentionally stop the persistent `hc` core or agent terminals and does not delete the tunnel.
+For attached troubleshooting, use `hd server --foreground --tunnel agent-host` and stop it with Ctrl+C. Foreground servers are not controlled by `status` or `stop`. Stopping a server closes bridge connections and the tunnel host, but does not intentionally stop the persistent `hc` core or agent terminals and does not delete the tunnel.
 
 ## Client
 
 Once the server is ready, run on the client, substituting the identifier and settings printed by the server:
 
 ```sh
-hd herdr client --name workbox --tunnel agent-host.inc1
+hd client --name workbox --tunnel agent-host.inc1
 hc machine ls
 hc exec --on workbox whoami
 ```
@@ -69,10 +69,10 @@ For example, with different local and remote sessions (POSIX shell; replace the 
 
 ```sh
 # On the server:
-hd herdr server --tunnel example-tunnel --session remote-work
+hd server --tunnel example-tunnel --session remote-work
 
 # On the client, assuming the server printed example-tunnel.inc1:
-hd herdr client --name remote-box --tunnel example-tunnel.inc1 --session remote-work --local-session local-desktop
+hd client --name remote-box --tunnel example-tunnel.inc1 --session remote-work --local-session local-desktop
 
 # Select the same local core for subsequent hc commands:
 (
@@ -80,7 +80,7 @@ hd herdr client --name remote-box --tunnel example-tunnel.inc1 --session remote-
   export HC_SESSION=local-desktop
   hc machine ls
 )
-hd herdr reconnect --all --role client --local-session local-desktop
+hd reconnect --all --role client --local-session local-desktop
 ```
 
 Registration pins the executable paths of `hd` and `devtunnel`; keep them stable. If either executable is renamed or relocated, check the registrations in the same local core used for registration, remove only the affected machine, then register it again. For the `local-desktop` example above, select that core and inspect the list (POSIX shell):
@@ -99,19 +99,19 @@ In particular, reconnect cannot repair a registration whose executable has been 
 
 ## Agent status
 
-Agent status integration is optional and is not required for the tunnel. `hd herdr copilot-status EVENT` reports Copilot lifecycle events to Herdr's Agents panel when invoked by a configured hook. Outside a Herdr terminal it does nothing; inside one it reads a JSON object from stdin and writes the status to the controlling terminal. `permissionRequest` and `agentStop` do not report completion or a human prompt. A root `sessionIdle` event reports completion, or idle if aborted; without a separately configured hook or extension that supplies this root event, completion is not reported by this integration. Hooks and extensions are not installed or configured by this project; use `--help` for supported events.
+Agent status integration is optional and is not required for the tunnel. `hd copilot-status EVENT` reports Copilot lifecycle events to Herdr's Agents panel when invoked by a configured hook. Outside a Herdr terminal it does nothing; inside one it reads a JSON object from stdin and writes the status to the controlling terminal. `permissionRequest` and `agentStop` do not report completion or a human prompt. A root `sessionIdle` event reports completion, or idle if aborted; without a separately configured hook or extension that supplies this root event, completion is not reported by this integration. Hooks and extensions are not installed or configured by this project; use `--help` for supported events.
 
 ## Reconnect
 
 ```sh
-hd herdr reconnect --all
-hd herdr reconnect --all --role server
-hd herdr reconnect --all --role client --session work
+hd reconnect --all
+hd reconnect --all --role server
+hd reconnect --all --role client --session work
 ```
 
 `r` is an alias for `reconnect`, and `--all` is required. With the default `--role both`, it restarts all **running managed** server profiles with their saved settings, waits for readiness, then asks the local core to reconnect recognized tunnel machines. It leaves stopped profiles, foreground servers, SSH machines, and other transports alone. Server restarts close bridge connections; downtime can be prolonged, and readiness may not return if restart fails. They do not restart persistent cores or agents. For each recognized registration, reconnect calls `machine.connect` without first disconnecting it; it does not remove or re-register machines. Reconnect `--session` and its alias `--local-session` select the local core session containing registrations, not the remote session; both default to `default` when omitted and do not filter server profiles. `--hc PATH` selects the local executable and `--timeout` bounds each client API call. Failures are reported per target, remaining targets are attempted, and any failure yields an unsuccessful exit. Reconnect does not perform login.
 
-Reconnect lists machines through the local `hc` API and recognizes only `--via` registrations whose standalone `herdr connect` command has the expected options and an absolute executable path resolving to the same canonical path as the running executable, including through symlinks. Missing paths and different paths, even identical copies, do not match. Replacing the binary at the same path preserves recognition; relocating it can require re-registration. Each API operation opens a separate `hc connect` process; a machine is reported connected only when `machine.connect` returns state `connected`.
+Reconnect lists machines through the local `hc` API and recognizes only `--via` registrations whose standalone `connect` or legacy `herdr connect` command has the expected options and an absolute executable path resolving to the same canonical path as the running executable, including through symlinks. Previous registrations using `herdr connect` remain compatible under these conditions. Missing paths and different paths, even identical copies, do not match. Replacing the binary at the same path preserves recognition; relocating it can require re-registration. Each API operation opens a separate `hc connect` process; a machine is reported connected only when `machine.connect` returns state `connected`.
 
 The server bridge and reconnect clear inherited `HC_SOCKET` when starting their respective `hc connect --session` processes. They do not clear `HC_SESSION`, and an `hc`-configured socket may still override `--session`; check the `hc` environment and configuration if the wrong core is selected. Server and reconnect `--session` default to `default` rather than reading `HC_SESSION`. Client registration without `--local-session` leaves both environment variables inherited.
 

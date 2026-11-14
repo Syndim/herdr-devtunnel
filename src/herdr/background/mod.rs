@@ -13,7 +13,7 @@ use crate::dt::{background as lifecycle, build_failure_matchers};
 
 #[derive(Args)]
 pub struct SessionArgs {
-    /// Profile supplied to `hd herdr server --name`.
+    /// Profile supplied to `hd server --name`.
     #[arg(long, default_value = "default", value_parser = parse_machine)]
     name: String,
 }
@@ -169,7 +169,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
         );
         ensure!(
             !directory.join("stop").try_exists()?,
-            "Server '{}' has a shutdown request pending; shutdown is cooperative and may take time. Check `hd herdr status --name {}` and retry `hd herdr stop --name {}` if needed; then retry `server`. See {}",
+            "Server '{}' has a shutdown request pending; shutdown is cooperative and may take time. Check `hd status --name {}` and retry `hd stop --name {}` if needed; then retry `server`. See {}",
             args.name,
             args.name,
             args.name,
@@ -178,7 +178,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
         let state = read_state(directory)?;
         let Some(state) = state.filter(|state| state.ready) else {
             bail!(
-                "Server '{}' is running but not ready (it may still be starting or recovering). It remains active and may retry in the background. Check `hd herdr status --name {}` and retry `server` when ready, or request shutdown with `hd herdr stop --name {}`. See {}",
+                "Server '{}' is running but not ready (it may still be starting or recovering). It remains active and may retry in the background. Check `hd status --name {}` and retry `server` when ready, or request shutdown with `hd stop --name {}`. See {}",
                 args.name,
                 args.name,
                 args.name,
@@ -211,7 +211,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
     let log = fs::File::create(&log_path).context("Failed to create Herdr server log")?;
     let mut command = Command::new(snapshot);
     command
-        .args(["herdr", "server-worker", "--directory"])
+        .args(["server-worker", "--directory"])
         .arg(directory)
         .stdin(Stdio::null())
         .stdout(log.try_clone()?)
@@ -243,7 +243,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
                     child.id()
                 );
                 println!(
-                    "CLIENT COMMAND: hd herdr client --name remote --tunnel {} --port {} --session {}",
+                    "CLIENT COMMAND: hd client --name remote --tunnel {} --port {} --session {}",
                     state.tunnel, state.port, state.session
                 );
                 println!("Log: {}", log_path.display());
@@ -253,7 +253,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
         if started.elapsed() >= startup_timeout {
             fs::write(directory.join("stop"), b"").context("Failed to cancel Herdr startup")?;
             bail!(
-                "Herdr startup timed out; shutdown was requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd herdr status --name {}` and retry `hd herdr stop --name {}` if needed. See {}",
+                "Herdr startup timed out; shutdown was requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd status --name {}` and retry `hd stop --name {}` if needed. See {}",
                 args.name,
                 args.name,
                 log_path.display()
@@ -312,7 +312,7 @@ fn stop_in_directory(name: &str, directory: &Path) -> Result<()> {
     while lifecycle::running(directory)? {
         ensure!(
             started.elapsed() < Duration::from_secs(10),
-            "Server '{}' has not stopped after 10 seconds; shutdown remains requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd herdr status --name {}` and retry `hd herdr stop --name {}` if needed. See {}",
+            "Server '{}' has not stopped after 10 seconds; shutdown remains requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd status --name {}` and retry `hd stop --name {}` if needed. See {}",
             name,
             name,
             name,
@@ -406,7 +406,7 @@ pub(super) async fn worker(args: WorkerArgs) -> Result<()> {
             && executable
                 .file_name()
                 .is_some_and(|name| name.to_string_lossy().starts_with("worker-")),
-        "server-worker must run from a private executable snapshot; use hd herdr server"
+        "server-worker must run from a private executable snapshot; use hd server"
     );
     let _worker = lifecycle::try_lock(&args.directory.join("worker.lock"))?
         .context("Herdr server is already running")?;
@@ -494,10 +494,8 @@ mod tests {
 
     #[test]
     fn stop_ignores_saved_failures_when_not_running() {
-        let directory = std::env::temp_dir().join(format!(
-            "herdr-stop-idle-{:032x}",
-            rand::random::<u128>()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("herdr-stop-idle-{:032x}", rand::random::<u128>()));
         fs::create_dir(&directory).unwrap();
         assert!(stop_in_directory("test", &directory).is_ok());
         write_state(
@@ -524,10 +522,8 @@ mod tests {
 
     #[test]
     fn worker_result_keeps_serve_and_reporter_errors() {
-        let directory = std::env::temp_dir().join(format!(
-            "herdr-finish-{:032x}",
-            rand::random::<u128>()
-        ));
+        let directory =
+            std::env::temp_dir().join(format!("herdr-finish-{:032x}", rand::random::<u128>()));
         fs::create_dir(&directory).unwrap();
         let reporter = Reporter {
             directory: Some(directory.clone()),

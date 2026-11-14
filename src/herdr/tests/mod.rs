@@ -143,14 +143,11 @@ fn cli_help_uses_binary_name() {
 #[test]
 fn cli_requires_explicit_target_and_valid_identifiers() {
     for args in [
-        vec!["hd", "herdr", "server"],
-        vec!["hd", "herdr", "client", "--tunnel", "box.use2"],
-        vec![
-            "hd", "herdr", "server", "--tunnel", "box.use2", "--port", "0",
-        ],
+        vec!["hd", "server"],
+        vec!["hd", "client", "--tunnel", "box.use2"],
+        vec!["hd", "server", "--tunnel", "box.use2", "--port", "0"],
         vec![
             "hd",
-            "herdr",
             "server",
             "--tunnel",
             "box.use2",
@@ -159,7 +156,6 @@ fn cli_requires_explicit_target_and_valid_identifiers() {
         ],
         vec![
             "hd",
-            "herdr",
             "client",
             "--tunnel",
             "box.use2",
@@ -168,17 +164,9 @@ fn cli_requires_explicit_target_and_valid_identifiers() {
             "--local-session",
             "../other",
         ],
+        vec!["hd", "reconnect", "--all", "--local-session", "../other"],
         vec![
             "hd",
-            "herdr",
-            "reconnect",
-            "--all",
-            "--local-session",
-            "../other",
-        ],
-        vec![
-            "hd",
-            "herdr",
             "reconnect",
             "--all",
             "--session",
@@ -186,18 +174,14 @@ fn cli_requires_explicit_target_and_valid_identifiers() {
             "--local-session",
             "two",
         ],
-        vec![
-            "hd",
-            "herdr",
-            "server",
-            "--tunnel",
-            "box.use2",
-            "--allow-anonymous",
-        ],
-        vec!["hd", "herdr", "server", "--tunnel", "box.use2", "--create"],
+        vec!["hd", "server", "--tunnel", "box.use2", "--allow-anonymous"],
+        vec!["hd", "server", "--tunnel", "box.use2", "--create"],
     ] {
         assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
     }
+    Cli::try_parse_from(["hd", "serve", "--tunnel", "box.use2"]).unwrap();
+    Cli::try_parse_from(["hd", "add", "--name", "box", "--tunnel", "box.use2"]).unwrap();
+    Cli::try_parse_from(["hd", "r", "--all"]).unwrap();
     Cli::try_parse_from(["hd", "herdr", "serve", "--tunnel", "box.use2"]).unwrap();
     Cli::try_parse_from([
         "hd", "herdr", "add", "--name", "box", "--tunnel", "box.use2",
@@ -211,8 +195,7 @@ fn client_and_reconnect_help_describe_sessions_and_transport() {
     use clap::CommandFactory;
 
     let mut command = Cli::command();
-    let herdr = command.find_subcommand_mut("herdr").unwrap();
-    let client = herdr
+    let client = command
         .find_subcommand_mut("client")
         .unwrap()
         .render_long_help()
@@ -230,7 +213,7 @@ fn client_and_reconnect_help_describe_sessions_and_transport() {
         client.contains("If omitted, inherits the environment"),
         "{client}"
     );
-    let reconnect = herdr
+    let reconnect = command
         .find_subcommand_mut("reconnect")
         .unwrap()
         .render_long_help()

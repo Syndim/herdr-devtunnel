@@ -67,7 +67,7 @@ impl Fixture {
 
     fn command_with_devtunnel(&self, subcommand: &str, devtunnel: &Path) -> Command {
         let mut command = Command::new(&self.cli);
-        command.args(["herdr", subcommand]);
+        command.arg(subcommand);
         if !matches!(subcommand, "status" | "stop" | "reconnect" | "r") {
             command
                 .arg("--hc")
@@ -368,6 +368,80 @@ fn binary_help_identifies_hd() {
         stdout.contains(&format!("Usage: hd{} ", std::env::consts::EXE_SUFFIX)),
         "{stdout}"
     );
+    let commands: Vec<_> = stdout
+        .lines()
+        .filter_map(|line| line.split_whitespace().next())
+        .collect();
+    for name in [
+        "setup",
+        "doctor",
+        "server",
+        "status",
+        "stop",
+        "reconnect",
+        "client",
+        "copilot-status",
+    ] {
+        assert!(commands.contains(&name), "missing {name}: {stdout}");
+    }
+    for name in ["herdr", "connect", "_tunnel", "server-worker"] {
+        assert!(!commands.contains(&name), "unexpected {name}: {stdout}");
+    }
+}
+
+#[test]
+fn legacy_internal_commands_keep_their_runtime_guards_and_lifetime() {
+    let fixture = Fixture::new();
+    for legacy in [false, true] {
+        let mut worker = Command::new(&fixture.cli);
+        if legacy {
+            worker.arg("herdr");
+        }
+        let output = worker
+            .args(["server-worker", "--directory"])
+            .arg(&fixture.root)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains("server-worker must run from a private executable snapshot"),
+            "{output:?}"
+        );
+
+        let mut command = Command::new(&fixture.cli);
+        if legacy {
+            command.arg("herdr");
+        }
+        let _ = fs::remove_file(fixture.root.join("host-pid"));
+        command
+            .args(["_tunnel", "host", "--tunnel", "fixture.use2", "--devtunnel"])
+            .arg(&fixture.dt)
+            .env("HERDR_TEST_FIXTURE_ROOT", &fixture.root)
+            .env("HERDR_TEST_FIXTURE_PORT", fixture.port.to_string())
+            .env("HOME", &fixture.root)
+            .env("USERPROFILE", &fixture.root)
+            .stdin(Stdio::piped());
+        let mut tunnel = Running::start(command);
+        let attempt = if legacy { "2" } else { "1" };
+        let mut host_pid = None;
+        wait_until(|| {
+            if fs::read_to_string(fixture.root.join("host-attempts"))
+                .is_ok_and(|attempts| attempts == attempt)
+            {
+                host_pid = fs::read_to_string(fixture.root.join("host-pid"))
+                    .ok()
+                    .and_then(|pid| pid.parse::<u32>().ok())
+                    .filter(|&pid| pid != 0);
+            }
+            host_pid.is_some()
+        });
+        let host_pid = host_pid.unwrap().to_string();
+        assert!(process_alive(&host_pid));
+        drop(tunnel.child.stdin.take());
+        success(&tunnel.output());
+        wait_for_exit(&host_pid);
+    }
 }
 
 #[test]
@@ -391,7 +465,6 @@ fn cli_rejects_unsafe_identifiers_and_options_before_spawning_tools() {
     ];
     for args in invalid {
         let output = Command::new(&fixture.cli)
-            .arg("herdr")
             .args(*args)
             .env("HOME", &fixture.root)
             .env("USERPROFILE", &fixture.root)
@@ -555,11 +628,11 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     success(&setup);
     let setup_output = String::from_utf8_lossy(&setup.stdout);
     assert!(
-        setup_output.contains("Server: hd herdr server --tunnel UNIQUE-NAME"),
+        setup_output.contains("Server: hd server --tunnel UNIQUE-NAME"),
         "{setup_output}"
     );
     assert!(
-        setup_output.contains("Client: hd herdr client --name remote --tunnel NAME.CLUSTER"),
+        setup_output.contains("Client: hd client --name remote --tunnel NAME.CLUSTER"),
         "{setup_output}"
     );
 
@@ -666,15 +739,64 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     let exe = fixture.cli.canonicalize().unwrap();
     #[cfg(not(windows))]
     let expected_via = format!(
-        "--via\n'{}' 'herdr' 'connect'",
+        "--via\n'{}' 'connect'",
         exe.to_str().unwrap().replace('\'', "'\\''")
     );
     #[cfg(windows)]
-    let expected_via = format!("--via\n\"{}\" \"herdr\" \"connect\"", exe.display());
+    let expected_via = format!("--via\n\"{}\" \"connect\"", exe.display());
     assert!(
         registration_args.contains(&expected_via),
         "{registration_args}"
     );
+    wait_for_exit(&fs::read_to_string(fixture.root.join("connect-pid")).unwrap());
+
+    let legacy_args = [
+        exe.to_str().unwrap().to_string(),
+        "herdr".into(),
+        "connect".into(),
+        "--tunnel".into(),
+        "fixture.use2".into(),
+        "--port".into(),
+        fixture.port.to_string(),
+        "--session".into(),
+        "work".into(),
+        "--timeout".into(),
+        "5".into(),
+        "--devtunnel".into(),
+        fixture.dt.canonicalize().unwrap().to_str().unwrap().into(),
+    ];
+    #[cfg(not(windows))]
+    let legacy_via = legacy_args
+        .iter()
+        .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    #[cfg(windows)]
+    let legacy_via = legacy_args
+        .iter()
+        .map(|arg| format!("\"{arg}\""))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let mut legacy_registration = Command::new(&fixture.hc);
+    legacy_registration
+        .args([
+            "machine",
+            "add",
+            "--name",
+            "legacy",
+            "--session",
+            "work",
+            "--via",
+        ])
+        .arg(&legacy_via)
+        .env("HERDR_TEST_FIXTURE_ROOT", &fixture.root)
+        .env("HERDR_TEST_FIXTURE_PORT", fixture.port.to_string())
+        .env("HOME", &fixture.root)
+        .env("USERPROFILE", &fixture.root)
+        .current_dir(&fixture.root)
+        .stdin(Stdio::null());
+    let legacy_registration = Running::start(legacy_registration).output();
+    success(&legacy_registration);
     wait_for_exit(&fs::read_to_string(fixture.root.join("connect-pid")).unwrap());
 
     let mut connector = fixture.connection("connect");
@@ -1370,6 +1492,18 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     let worker_pid = fixture.state()["pid"].as_u64().unwrap().to_string();
     let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
     assert_eq!(fixture.state()["ready"], true);
+    let root_status = fixture.command("status").output().unwrap();
+    let legacy_status = Command::new(&fixture.cli)
+        .args(["herdr", "status"])
+        .env("HOME", &fixture.root)
+        .env("USERPROFILE", &fixture.root)
+        .current_dir(&fixture.root)
+        .output()
+        .unwrap();
+    success(&root_status);
+    success(&legacy_status);
+    assert_eq!(root_status.stdout, legacy_status.stdout);
+    assert!(String::from_utf8_lossy(&legacy_status.stdout).contains("ready=true"));
     assert!(process_alive(&worker_pid));
     assert!(process_alive(&host_pid));
     let socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();

@@ -28,7 +28,6 @@ impl Home {
 
     fn command(&self, args: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_hd"))
-            .arg("herdr")
             .args(args)
             .env("HOME", &self.0)
             .current_dir(&self.0)
@@ -42,7 +41,7 @@ impl Home {
 
     fn status_at(&self, home: &Path) -> Output {
         Command::new(env!("CARGO_BIN_EXE_hd"))
-            .args(["herdr", "status"])
+            .arg("status")
             .env("HOME", home)
             .current_dir(&self.0)
             .output()
@@ -53,7 +52,7 @@ impl Home {
         Command::new("sh")
             .args(["-c", "umask \"$1\"; shift; exec \"$@\"", "sh", mask])
             .arg(env!("CARGO_BIN_EXE_hd"))
-            .args(["herdr", "status"])
+            .arg("status")
             .env("HOME", &self.0)
             .current_dir(&self.0)
             .output()

@@ -238,15 +238,26 @@ fn is_our_transport(target: &str, current_exe: &Path) -> bool {
     let words = unix_transport_words(target);
     #[cfg(windows)]
     let words = windows_transport_words(target);
-    let Some(words) = words else { return false };
-    if words.len() < 5
-        || words[1..4] != ["herdr", "connect", "--tunnel"]
-        || super::parse_tunnel(&words[4]).is_err()
+    words.is_some_and(|words| is_our_transport_words(&words, current_exe))
+}
+
+fn is_our_transport_words(words: &[String], current_exe: &Path) -> bool {
+    let Some((executable, args)) = words.split_first() else {
+        return false;
+    };
+    let args = if args.first().is_some_and(|arg| arg == "herdr") {
+        &args[1..]
+    } else {
+        args
+    };
+    if args.len() < 3
+        || args[..2] != ["connect", "--tunnel"]
+        || super::parse_tunnel(&args[2]).is_err()
     {
         return false;
     }
     let mut seen = 0u8;
-    for pair in words[5..].chunks(2) {
+    for pair in args[3..].chunks(2) {
         if pair.len() != 2 {
             return false;
         }
@@ -265,7 +276,7 @@ fn is_our_transport(target: &str, current_exe: &Path) -> bool {
         }
         seen |= bit;
     }
-    let path = Path::new(&words[0]);
+    let path = Path::new(executable);
     if !path.is_absolute() || !same_executable(path, current_exe) {
         eprintln!(
             "[herdr] Skipping transport: executable {} is missing or does not resolve to the current executable",
@@ -388,19 +399,24 @@ mod tests {
 
     #[test]
     fn unix_parser_accepts_only_our_single_quoted_command() {
-        let words = [
-            "/tmp/it's here/hd",
-            "herdr",
-            "connect",
-            "--tunnel",
-            "abc.use2",
-        ];
+        let words = ["/tmp/it's here/hd", "connect", "--tunnel", "abc.use2"];
         let target = words
             .iter()
             .map(|w| super::super::shell_quote(w))
             .collect::<Vec<_>>()
             .join(" ");
         assert_eq!(unix_transport_words(&target).unwrap(), words);
+        let legacy = target.replacen(" 'connect'", " 'herdr' 'connect'", 1);
+        assert_eq!(
+            unix_transport_words(&legacy).unwrap(),
+            [
+                "/tmp/it's here/hd",
+                "herdr",
+                "connect",
+                "--tunnel",
+                "abc.use2"
+            ]
+        );
         for suffix in [
             "; 'echo' 'bad'",
             " > /tmp/redirect",
@@ -419,20 +435,29 @@ mod tests {
 
     #[test]
     fn windows_parser_matches_hc_rules_for_quotes_and_backslashes() {
-        let words = windows_transport_words(
-            r#"  "C:\Program Files\hd.exe" herdr connect --tunnel "test.use2""#,
-        )
-        .unwrap();
-        assert_eq!(
-            words,
-            [
-                r"C:\Program Files\hd.exe",
-                "herdr",
-                "connect",
-                "--tunnel",
-                "test.use2"
-            ]
-        );
+        for (command, expected) in [
+            (
+                r#"  "C:\Program Files\hd.exe" connect --tunnel "test.use2""#,
+                vec![
+                    r"C:\Program Files\hd.exe",
+                    "connect",
+                    "--tunnel",
+                    "test.use2",
+                ],
+            ),
+            (
+                r#"  "C:\Program Files\hd.exe" herdr connect --tunnel "test.use2""#,
+                vec![
+                    r"C:\Program Files\hd.exe",
+                    "herdr",
+                    "connect",
+                    "--tunnel",
+                    "test.use2",
+                ],
+            ),
+        ] {
+            assert_eq!(windows_transport_words(command).unwrap(), expected);
+        }
         let words =
             windows_transport_words("'C:/Program Files/hd.exe' 'herdr' 'connect' '--tunnel' 'abc'")
                 .unwrap();
@@ -512,6 +537,162 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn transport_recognition_validates_both_command_forms() {
+        let exe = std::env::current_exe().unwrap();
+        let exe_str = exe.to_str().unwrap();
+        for legacy in [false, true] {
+            let mut prefix = vec![exe_str];
+            if legacy {
+                prefix.push("herdr");
+            }
+            for (args, expected) in [
+                (vec!["connect", "--tunnel", "abc.use2"], true),
+                (
+                    vec![
+                        "connect",
+                        "--tunnel",
+                        "abc.use2",
+                        "--timeout",
+                        "600",
+                        "--port",
+                        "65535",
+                        "--session",
+                        "work",
+                        "--devtunnel",
+                        "path with spaces",
+                    ],
+                    true,
+                ),
+                (vec!["connect", "--tunnel", "a"], false),
+                (vec!["connect", "--tunnel", "bad;command"], false),
+                (vec!["connect", "--tunnel"], false),
+                (vec!["connect", "--tunnel=abc.use2"], false),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--tunnel", "other"],
+                    false,
+                ),
+                (
+                    vec![
+                        "connect", "--tunnel", "abc.use2", "--port", "1", "--port", "2",
+                    ],
+                    false,
+                ),
+                (
+                    vec![
+                        "connect",
+                        "--tunnel",
+                        "abc.use2",
+                        "--session",
+                        "one",
+                        "--session",
+                        "two",
+                    ],
+                    false,
+                ),
+                (
+                    vec![
+                        "connect",
+                        "--tunnel",
+                        "abc.use2",
+                        "--timeout",
+                        "1",
+                        "--timeout",
+                        "2",
+                    ],
+                    false,
+                ),
+                (
+                    vec![
+                        "connect",
+                        "--tunnel",
+                        "abc.use2",
+                        "--devtunnel",
+                        "one",
+                        "--devtunnel",
+                        "two",
+                    ],
+                    false,
+                ),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--port", "0"],
+                    false,
+                ),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--port", "65536"],
+                    false,
+                ),
+                (
+                    vec![
+                        "connect",
+                        "--tunnel",
+                        "abc.use2",
+                        "--session",
+                        "bad session",
+                    ],
+                    false,
+                ),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--timeout", "0"],
+                    false,
+                ),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--timeout", "601"],
+                    false,
+                ),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--devtunnel", ""],
+                    false,
+                ),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--hc", "evil"],
+                    false,
+                ),
+                (
+                    vec!["connect", "--tunnel", "abc.use2", "--bootstrap", "evil"],
+                    false,
+                ),
+                (vec!["connect", "--tunnel", "abc.use2", "--session"], false),
+                (vec!["connect", "--tunnel", "abc.use2", "extra"], false),
+                (vec!["connect", "connect", "--tunnel", "abc.use2"], false),
+                (vec!["herdr", "connect", "--tunnel", "abc.use2"], !legacy),
+                (vec!["client", "--tunnel", "abc.use2"], false),
+            ] {
+                let words = prefix.iter().copied().chain(args).collect::<Vec<_>>();
+                let unix = words
+                    .iter()
+                    .map(|word| super::super::shell_quote(word))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let windows = words
+                    .iter()
+                    .map(|word| super::super::windows_quote(word))
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                #[cfg(not(windows))]
+                let native = &unix;
+                #[cfg(windows)]
+                let native = &windows;
+                assert_eq!(is_our_transport(native, &exe), expected, "{words:?}");
+                for parsed in [
+                    unix_transport_words(&unix),
+                    windows_transport_words(&windows),
+                ] {
+                    assert_eq!(
+                        is_our_transport_words(&parsed.unwrap(), &exe),
+                        expected,
+                        "{words:?}"
+                    );
+                }
+            }
+        }
+        for path in ["hd", "", "missing"] {
+            let words = [path, "connect", "--tunnel", "abc.use2"].map(str::to_string);
+            assert!(!is_our_transport_words(&words, &exe), "{path:?}");
+        }
+        assert!(!is_our_transport_words(&[], &exe));
     }
 
     #[test]
