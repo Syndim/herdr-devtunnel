@@ -90,6 +90,7 @@ impl Fixture {
             "HERDR_TEST_FIXTURE_HANG_AFTER_EOF",
             "HERDR_TEST_FIXTURE_HC_GUARD",
             "HERDR_TEST_FIXTURE_HOST_MODE",
+            "HERDR_TEST_FIXTURE_CONNECT_GATE",
             "HERDR_TEST_FIXTURE_LEGACY_HC",
             "HERDR_TEST_FIXTURE_REQUIRE_NO_HC_SOCKET",
         ] {
@@ -108,6 +109,10 @@ impl Fixture {
     }
 
     fn connection(&self, subcommand: &str) -> Command {
+        self.connection_with_timeout(subcommand, "5")
+    }
+
+    fn connection_with_timeout(&self, subcommand: &str, timeout: &str) -> Command {
         let mut command = self.command(subcommand);
         command.args([
             "--tunnel",
@@ -117,7 +122,7 @@ impl Fixture {
             "--session",
             "work",
             "--timeout",
-            "5",
+            timeout,
         ]);
         command
     }
@@ -307,53 +312,200 @@ fn bootstrap() -> &'static str {
     "sh -c 'p=$(command -v herdr-core) || p=$HOME/.local/bin/herdr-core; [ -x \"$p\" ] || { echo \"herdr-core is not installed here\" >&2; exit 127; }; HC_SESSION=work exec \"$p\" connect'"
 }
 
+#[cfg(unix)]
 fn process_alive(pid: &str) -> bool {
+    Command::new("kill")
+        .args(["-0", pid])
+        .stderr(Stdio::null())
+        .status()
+        .unwrap()
+        .success()
+}
+
+struct ProcessIdentity {
+    pid: String,
     #[cfg(windows)]
-    {
-        let result = Command::new("tasklist")
-            .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
-            .output()
-            .unwrap();
-        assert!(
-            result.status.success(),
-            "tasklist failed: {}",
-            String::from_utf8_lossy(&result.stderr)
-        );
-        String::from_utf8_lossy(&result.stdout).contains(&format!("\"{pid}\""))
+    handle: std::os::windows::io::OwnedHandle,
+}
+
+impl ProcessIdentity {
+    fn capture(pid: &str) -> Self {
+        let id = pid.parse::<u32>().expect("invalid fixture PID");
+        assert_ne!(id, 0, "invalid fixture PID");
+        #[cfg(windows)]
+        let handle = {
+            use std::os::windows::io::FromRawHandle;
+
+            #[link(name = "kernel32")]
+            unsafe extern "system" {
+                fn OpenProcess(access: u32, inherit: i32, process_id: u32)
+                -> *mut std::ffi::c_void;
+            }
+            let raw = unsafe { OpenProcess(0x0010_0000, 0, id) };
+            assert!(
+                !raw.is_null(),
+                "OpenProcess({pid}) failed: {}",
+                std::io::Error::last_os_error()
+            );
+            unsafe { std::os::windows::io::OwnedHandle::from_raw_handle(raw) }
+        };
+        let process = Self {
+            pid: pid.to_string(),
+            #[cfg(windows)]
+            handle,
+        };
+        assert!(process.is_alive(), "fixture process {pid} already exited");
+        process
     }
-    #[cfg(unix)]
-    {
-        Command::new("kill")
-            .args(["-0", pid])
-            .stderr(Stdio::null())
-            .status()
-            .unwrap()
-            .success()
+
+    fn is_alive(&self) -> bool {
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawHandle;
+            windows_handle_alive(self.handle.as_raw_handle())
+                .unwrap_or_else(|error| panic!("checking fixture process {}: {error}", self.pid))
+        }
+        #[cfg(unix)]
+        {
+            process_alive(&self.pid)
+        }
+    }
+
+    fn wait_for_exit(&self) {
+        let deadline = Instant::now() + Duration::from_secs(12);
+        while self.is_alive() {
+            if Instant::now() >= deadline {
+                panic!("Fixture child {} did not exit within 12 seconds", self.pid);
+            }
+            thread::sleep(Duration::from_millis(50));
+        }
     }
 }
 
-fn wait_for_exit(pid: &str) {
-    let deadline = Instant::now() + Duration::from_secs(12);
-    while process_alive(pid) {
-        if Instant::now() >= deadline {
-            #[cfg(unix)]
-            let details = Command::new("ps")
-                .args(["-p", pid, "-o", "pid=,ppid=,stat=,lstart=,command="])
-                .output()
-                .map(|output| {
-                    format!(
-                        "stdout: {}\nstderr: {}",
-                        String::from_utf8_lossy(&output.stdout),
-                        String::from_utf8_lossy(&output.stderr)
-                    )
-                })
-                .unwrap_or_else(|error| format!("ps failed: {error}"));
-            #[cfg(windows)]
-            let details = "inspect tasklist for process details".to_string();
-            panic!("Fixture child {pid} did not exit within 12 seconds: {details}");
-        }
-        thread::sleep(Duration::from_millis(50));
+#[cfg(windows)]
+fn windows_handle_alive(handle: std::os::windows::io::RawHandle) -> std::io::Result<bool> {
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        fn WaitForSingleObject(handle: *mut std::ffi::c_void, milliseconds: u32) -> u32;
     }
+    match unsafe { WaitForSingleObject(handle, 0) } {
+        0 => Ok(false),
+        258 => Ok(true),
+        u32::MAX => Err(std::io::Error::last_os_error()),
+        result => Err(std::io::Error::other(format!(
+            "unexpected wait result {result:#x}"
+        ))),
+    }
+}
+
+fn fixture_identity(path: &Path) -> ProcessIdentity {
+    let mut record = None;
+    wait_until(|| {
+        match fs::read_to_string(path) {
+            Ok(pid) => record = Some(pid),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("read {}: {error}", path.display()),
+        }
+        record.is_some()
+    });
+    ProcessIdentity::capture(&record.unwrap())
+}
+
+fn hc_connections(fixture: &Fixture) -> Vec<String> {
+    let mut connections = Vec::new();
+    for entry in fs::read_dir(&fixture.root).unwrap() {
+        let entry = entry.unwrap();
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .starts_with("hc-connection-")
+        {
+            match fs::read_to_string(entry.path().join("pid")) {
+                Ok(pid) => connections.push(pid),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    connections.push(format!("unpublished:{}", entry.path().display()));
+                }
+                Err(error) => panic!("read connection PID: {error}"),
+            }
+        }
+    }
+    connections.sort();
+    connections
+}
+
+#[test]
+fn hc_connections_tracks_unpublished_pids_and_propagates_read_errors() {
+    let fixture = Fixture::new();
+    let attempt = fixture.root.join("hc-connection-1");
+    fs::create_dir(&attempt).unwrap();
+    assert_eq!(
+        hc_connections(&fixture),
+        [format!("unpublished:{}", attempt.display())]
+    );
+    fs::write(attempt.join("pid"), "123").unwrap();
+    assert_eq!(hc_connections(&fixture), ["123"]);
+    fs::remove_file(attempt.join("pid")).unwrap();
+    fs::create_dir(attempt.join("pid")).unwrap();
+    assert!(std::panic::catch_unwind(|| hc_connections(&fixture)).is_err());
+}
+
+fn gate_connector(command: &mut Command, gate: &str) {
+    command.env("HERDR_TEST_FIXTURE_CONNECT_GATE", gate);
+}
+
+fn release_connector(fixture: &Fixture, gate: &str) -> ProcessIdentity {
+    let process = fixture_identity(&fixture.root.join(format!("connect-{gate}-identity")));
+    assert!(process.is_alive(), "connector exited before release");
+    fs::write(fixture.root.join(format!("connect-{gate}-release")), "").unwrap();
+    process
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_process_identity_fixture() {
+    if std::env::var_os("HERDR_TEST_PROCESS_IDENTITY_CHILD").is_some() {
+        std::io::stdin().read_exact(&mut [0]).unwrap();
+        std::process::exit(259);
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn process_identity_tracks_handle_not_pid() {
+    let spawn = || {
+        Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "windows_process_identity_fixture"])
+            .env("HERDR_TEST_PROCESS_IDENTITY_CHILD", "1")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap()
+    };
+    let mut exited = spawn();
+    let mut live = spawn();
+    let mut exited_identity = ProcessIdentity::capture(&exited.id().to_string());
+    let live_identity = ProcessIdentity::capture(&live.id().to_string());
+    assert!(exited_identity.is_alive());
+    assert!(live_identity.is_alive());
+    exited.stdin.take().unwrap().write_all(&[1]).unwrap();
+    assert_eq!(exited.wait().unwrap().code(), Some(259));
+    exited_identity.wait_for_exit();
+    exited_identity.pid = live.id().to_string();
+    assert!(!exited_identity.is_alive());
+    assert!(live_identity.is_alive());
+    live.kill().unwrap();
+    live.wait().unwrap();
+    live_identity.wait_for_exit();
+}
+
+#[cfg(windows)]
+#[test]
+fn process_identity_rejects_bad_inputs_and_wait_failures() {
+    assert!(std::panic::catch_unwind(|| ProcessIdentity::capture("0")).is_err());
+    assert!(std::panic::catch_unwind(|| ProcessIdentity::capture("invalid")).is_err());
+    assert!(std::panic::catch_unwind(|| ProcessIdentity::capture("4294967295")).is_err());
+    assert!(windows_handle_alive(std::ptr::null_mut()).is_err());
 }
 
 #[test]
@@ -413,7 +565,6 @@ fn legacy_internal_commands_keep_their_runtime_guards_and_lifetime() {
         if legacy {
             command.arg("herdr");
         }
-        let _ = fs::remove_file(fixture.root.join("host-pid"));
         command
             .args(["_tunnel", "host", "--tunnel", "fixture.use2", "--devtunnel"])
             .arg(&fixture.dt)
@@ -423,24 +574,19 @@ fn legacy_internal_commands_keep_their_runtime_guards_and_lifetime() {
             .env("USERPROFILE", &fixture.root)
             .stdin(Stdio::piped());
         let mut tunnel = Running::start(command);
-        let attempt = if legacy { "2" } else { "1" };
+        let attempt = if legacy { 2 } else { 1 };
+        let path = fixture
+            .root
+            .join(format!("host-attempt-{attempt}/identity"));
         let mut host_pid = None;
         wait_until(|| {
-            if fs::read_to_string(fixture.root.join("host-attempts"))
-                .is_ok_and(|attempts| attempts == attempt)
-            {
-                host_pid = fs::read_to_string(fixture.root.join("host-pid"))
-                    .ok()
-                    .and_then(|pid| pid.parse::<u32>().ok())
-                    .filter(|&pid| pid != 0);
-            }
+            host_pid = fs::read_to_string(&path).ok();
             host_pid.is_some()
         });
-        let host_pid = host_pid.unwrap().to_string();
-        assert!(process_alive(&host_pid));
+        let host_process = ProcessIdentity::capture(&host_pid.unwrap());
         drop(tunnel.child.stdin.take());
         success(&tunnel.output());
-        wait_for_exit(&host_pid);
+        host_process.wait_for_exit();
     }
 }
 
@@ -675,6 +821,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     );
     assert!(fixture.root.join("port-exists").exists());
     let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let host_process = ProcessIdentity::capture(&host_pid);
     for data in [
         b"GET / HTTP/1.1\r\n".to_vec(),
         b"{\"protocol\":\"wrong\",\"session\":\"work\"}\n".to_vec(),
@@ -700,7 +847,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         }
         assert!(bytes.is_empty());
     }
-    assert!(!fixture.root.join("hc-connections").exists());
+    assert!(hc_connections(&fixture).is_empty());
     // Fragmented handshake followed immediately by binary payload.
     let mut socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
     socket
@@ -717,9 +864,11 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     assert_eq!(&response[newline + 1..], b"\0\xffpayload");
 
     let bytes: Vec<u8> = (0..2 * 1024 * 1024).map(|i| (i % 256) as u8).collect();
-    let mut connector = fixture.connection("connect");
+    let mut connector = fixture.connection_with_timeout("connect", "30");
     connector.arg(bootstrap()).stdin(Stdio::piped());
+    gate_connector(&mut connector, "payload");
     let mut connector = Running::start(connector);
+    let connector_process = release_connector(&fixture, "payload");
     let mut input = connector.child.stdin.take().unwrap();
     let payload = bytes.clone();
     let writer = thread::spawn(move || input.write_all(&payload).unwrap());
@@ -727,14 +876,14 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     writer.join().unwrap();
     success(&result);
     assert_eq!(result.stdout, bytes);
-    wait_for_exit(&fs::read_to_string(fixture.root.join("connect-pid")).unwrap());
+    connector_process.wait_for_exit();
 
-    let registration = fixture
-        .connection("client")
-        .args(["--name", "scratch"])
-        .output()
-        .unwrap();
-    success(&registration);
+    let mut registration = fixture.connection_with_timeout("client", "30");
+    registration.args(["--name", "scratch"]);
+    gate_connector(&mut registration, "registration");
+    let registration = Running::start(registration);
+    let registration_process = release_connector(&fixture, "registration");
+    success(&registration.output());
     let registration_args = fs::read_to_string(fixture.root.join("machine-args")).unwrap();
     let exe = fixture.cli.canonicalize().unwrap();
     #[cfg(not(windows))]
@@ -748,7 +897,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         registration_args.contains(&expected_via),
         "{registration_args}"
     );
-    wait_for_exit(&fs::read_to_string(fixture.root.join("connect-pid")).unwrap());
+    registration_process.wait_for_exit();
 
     let legacy_args = [
         exe.to_str().unwrap().to_string(),
@@ -761,7 +910,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         "--session".into(),
         "work".into(),
         "--timeout".into(),
-        "5".into(),
+        "30".into(),
         "--devtunnel".into(),
         fixture.dt.canonicalize().unwrap().to_str().unwrap().into(),
     ];
@@ -795,26 +944,30 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         .env("USERPROFILE", &fixture.root)
         .current_dir(&fixture.root)
         .stdin(Stdio::null());
-    let legacy_registration = Running::start(legacy_registration).output();
-    success(&legacy_registration);
-    wait_for_exit(&fs::read_to_string(fixture.root.join("connect-pid")).unwrap());
+    gate_connector(&mut legacy_registration, "legacy");
+    let legacy_registration = Running::start(legacy_registration);
+    let legacy_process = release_connector(&fixture, "legacy");
+    success(&legacy_registration.output());
+    legacy_process.wait_for_exit();
 
-    let mut connector = fixture.connection("connect");
+    let mut connector = fixture.connection_with_timeout("connect", "30");
     connector.arg(bootstrap()).stdin(Stdio::piped());
-    let _ = fs::remove_file(fixture.root.join("connect-pid"));
+    gate_connector(&mut connector, "kill");
     let mut connector = Running::start(connector);
-    let deadline = Instant::now() + Duration::from_secs(10);
-    while !fixture.root.join("connect-pid").exists() {
-        assert!(Instant::now() < deadline);
-        thread::sleep(Duration::from_millis(25));
-    }
-    let pid = fs::read_to_string(fixture.root.join("connect-pid")).unwrap();
+    let process = release_connector(&fixture, "kill");
+    let mut probe = connector.child.stdin.take().unwrap();
+    probe.write_all(b"probe").unwrap();
+    wait_until(|| hc_connections(&fixture).len() == 5);
+    assert!(
+        process.is_alive(),
+        "connector exited before parent was killed"
+    );
     connector.child.kill().unwrap();
     connector.child.wait().unwrap();
-    wait_for_exit(&pid);
+    process.wait_for_exit();
     server.child.kill().unwrap();
     server.child.wait().unwrap();
-    wait_for_exit(&host_pid);
+    host_process.wait_for_exit();
     let before_reuse = fs::read_to_string(fixture.root.join("tunnel-commands")).unwrap();
 
     let mut early_server = fixture.foreground_server();
@@ -828,7 +981,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     let result = Running::start(connector).output();
     success(&result);
     assert_eq!(result.stdout, b"remote-closed");
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let host_process = fixture_identity(&fixture.root.join("host-attempt-2/identity"));
     #[cfg(unix)]
     {
         assert!(
@@ -845,7 +998,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         early_server.child.kill().unwrap();
         early_server.child.wait().unwrap();
     }
-    wait_for_exit(&host_pid);
+    host_process.wait_for_exit();
 }
 
 #[test]
@@ -892,9 +1045,10 @@ fn server_reuses_or_repairs_only_a_valid_private_tunnel() {
     assert!(!commands.lines().any(|line| line.starts_with("create ")));
     assert!(commands.contains("port create fixture.use2 --port-number"));
     let pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let process = ProcessIdentity::capture(&pid);
     server.child.kill().unwrap();
     server.child.wait().unwrap();
-    wait_for_exit(&pid);
+    process.wait_for_exit();
 }
 
 #[test]
@@ -998,9 +1152,10 @@ fn server_creates_a_port_from_an_explicit_empty_port_list() {
             fixture.port
         )));
         let pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+        let process = ProcessIdentity::capture(&pid);
         server.child.kill().unwrap();
         server.child.wait().unwrap();
-        wait_for_exit(&pid);
+        process.wait_for_exit();
     }
 }
 
@@ -1056,6 +1211,7 @@ fn server_rechecks_port_list_before_retrying_host() {
         let mut server = Running::start(command);
         server.ready();
         let pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+        let process = ProcessIdentity::capture(&pid);
         match response {
             "extra" => fs::write(
                 fixture.root.join("port-list"),
@@ -1070,7 +1226,7 @@ fn server_rechecks_port_list_before_retrying_host() {
         trigger_host_failure(&fixture, "exit");
         let result = server.output();
         assert!(!result.status.success(), "{response}");
-        wait_for_exit(&pid);
+        process.wait_for_exit();
         assert_eq!(
             fs::read_to_string(fixture.root.join("host-attempts")).unwrap(),
             "1"
@@ -1146,9 +1302,10 @@ fn server_requires_explicit_tunnel_and_port_access_lists() {
     )));
     assert!(!commands.contains("port create "));
     let pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let process = ProcessIdentity::capture(&pid);
     server.child.kill().unwrap();
     server.child.wait().unwrap();
-    wait_for_exit(&pid);
+    process.wait_for_exit();
 }
 
 #[test]
@@ -1225,9 +1382,10 @@ fn server_accepts_access_lists_with_matching_identity_metadata() {
     let mut server = Running::start(fixture.foreground_server());
     server.ready();
     let pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let process = ProcessIdentity::capture(&pid);
     server.child.kill().unwrap();
     server.child.wait().unwrap();
-    wait_for_exit(&pid);
+    process.wait_for_exit();
 }
 
 #[test]
@@ -1300,6 +1458,7 @@ fn server_rechecks_access_before_retrying_host() {
         let mut server = Running::start(command);
         server.ready();
         let pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+        let process = ProcessIdentity::capture(&pid);
         fs::write(fixture.root.join(format!("acl-{scope}")), response).unwrap();
         trigger_host_failure(&fixture, "exit");
         let result = server.output();
@@ -1308,7 +1467,7 @@ fn server_rechecks_access_before_retrying_host() {
             String::from_utf8_lossy(&result.stderr).contains(expected),
             "{scope}: {response}"
         );
-        wait_for_exit(&pid);
+        process.wait_for_exit();
         assert_eq!(
             fs::read_to_string(fixture.root.join("host-attempts")).unwrap(),
             "1"
@@ -1381,9 +1540,10 @@ fn server_creates_in_the_requested_relay_and_preserves_bare_name_behavior() {
                 .contains(&format!("--tunnel fixture.{cluster}"))
         );
         let pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+        let process = ProcessIdentity::capture(&pid);
         server.child.kill().unwrap();
         server.child.wait().unwrap();
-        wait_for_exit(&pid);
+        process.wait_for_exit();
     }
 
     let fixture = Fixture::new();
@@ -1439,8 +1599,12 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
         assert_eq!(&probe, b"probe");
         sockets.push(socket);
     }
-    let pids = fs::read_to_string(fixture.root.join("hc-connections")).unwrap();
-    assert_eq!(pids.lines().count(), 32);
+    let pids = hc_connections(&fixture);
+    assert_eq!(pids.len(), 32);
+    let processes: Vec<_> = pids
+        .iter()
+        .map(|pid| ProcessIdentity::capture(pid))
+        .collect();
     for socket in &mut sockets {
         socket.get_mut().shutdown(Shutdown::Write).unwrap();
     }
@@ -1449,8 +1613,8 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
         socket.read_to_end(&mut trailing).unwrap();
         assert!(trailing.is_empty());
     }
-    for pid in pids.lines() {
-        wait_for_exit(pid);
+    for process in &processes {
+        process.wait_for_exit();
     }
 
     // A new client must still get a slot after the entire pool was occupied.
@@ -1470,12 +1634,13 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
     let mut echoed = [0; 11];
     socket.read_exact(&mut echoed).unwrap();
     assert_eq!(&echoed, b"reconnected");
-    let pids = fs::read_to_string(fixture.root.join("hc-connections")).unwrap();
-    let replacement_pid = pids.lines().last().unwrap();
+    let replacement_pid = fs::read_to_string(fixture.root.join("hc-connection-33/pid")).unwrap();
+    let replacement_process = ProcessIdentity::capture(&replacement_pid);
     let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let host_process = ProcessIdentity::capture(&host_pid);
     success(&fixture.command("stop").output().unwrap());
-    wait_for_exit(replacement_pid);
-    wait_for_exit(&host_pid);
+    replacement_process.wait_for_exit();
+    host_process.wait_for_exit();
 }
 
 #[test]
@@ -1490,7 +1655,9 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     success(&command.output().unwrap());
 
     let worker_pid = fixture.state()["pid"].as_u64().unwrap().to_string();
+    let worker_process = ProcessIdentity::capture(&worker_pid);
     let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let host_process = ProcessIdentity::capture(&host_pid);
     assert_eq!(fixture.state()["ready"], true);
     let root_status = fixture.command("status").output().unwrap();
     let legacy_status = Command::new(&fixture.cli)
@@ -1504,8 +1671,8 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     success(&legacy_status);
     assert_eq!(root_status.stdout, legacy_status.stdout);
     assert!(String::from_utf8_lossy(&legacy_status.stdout).contains("ready=true"));
-    assert!(process_alive(&worker_pid));
-    assert!(process_alive(&host_pid));
+    assert!(worker_process.is_alive());
+    assert!(host_process.is_alive());
     let socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
     socket
         .set_read_timeout(Some(Duration::from_secs(5)))
@@ -1524,11 +1691,10 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     let mut probe = [0; 5];
     socket.read_exact(&mut probe).unwrap();
     assert_eq!(&probe, b"probe");
-    let connections = fs::read_to_string(fixture.root.join("hc-connections")).unwrap();
-    let mut pids = connections.lines();
-    let hc_pid = pids.next().unwrap();
-    assert!(pids.next().is_none());
-    assert!(process_alive(hc_pid));
+    let connections = hc_connections(&fixture);
+    assert_eq!(connections.len(), 1);
+    let hc_pid = &connections[0];
+    let hc_process = ProcessIdentity::capture(hc_pid);
 
     let mut pending = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
     pending.write_all(b"{\"protocol\":").unwrap();
@@ -1547,11 +1713,8 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     pending
         .set_read_timeout(Some(Duration::from_secs(5)))
         .unwrap();
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("hc-connections")).unwrap(),
-        connections
-    );
-    assert!(process_alive(hc_pid));
+    assert_eq!(hc_connections(&fixture), connections);
+    assert!(hc_process.is_alive());
 
     let stopped = fixture
         .command("stop")
@@ -1575,17 +1738,14 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     success(&stopped);
     assert!(String::from_utf8_lossy(&stopped.stdout).contains("Server 'default' stopped."));
     assert!(
-        !process_alive(hc_pid),
+        !hc_process.is_alive(),
         "hc child {hc_pid} survived successful stop"
     );
     assert_eq!(fixture.state()["ready"], false);
     assert_eq!(fixture.state()["message"], "stopped");
-    assert_eq!(
-        fs::read_to_string(fixture.root.join("hc-connections")).unwrap(),
-        connections
-    );
-    wait_for_exit(&worker_pid);
-    wait_for_exit(&host_pid);
+    assert_eq!(hc_connections(&fixture), connections);
+    worker_process.wait_for_exit();
+    host_process.wait_for_exit();
 }
 
 fn trigger_host_failure(fixture: &Fixture, failure: &str) {
@@ -1653,7 +1813,8 @@ fn reconnect_all_restarts_running_servers_and_preserves_client_registrations() {
     let directory = fixture.root.join(".herdr-devtunnel/server-default");
     let config = fs::read(directory.join("config.json")).unwrap();
     let old_worker = fixture.state()["pid"].as_u64().unwrap().to_string();
-    let old_host = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let old_worker_process = ProcessIdentity::capture(&old_worker);
+    let old_host_process = fixture_identity(&fixture.root.join("host-attempt-1/identity"));
     let second_port = allocate_port();
     let second_dt = fixture
         .root
@@ -1679,6 +1840,7 @@ fn reconnect_all_restarts_running_servers_and_preserves_client_registrations() {
         serde_json::from_slice(&fs::read(second_directory.join("state.json")).unwrap()).unwrap()
     };
     let second_worker = second_state()["pid"].as_u64().unwrap().to_string();
+    let second_worker_process = ProcessIdentity::capture(&second_worker);
     let second_config = fs::read(second_directory.join("config.json")).unwrap();
     let stopped = fixture.root.join(".herdr-devtunnel/server-stopped");
     fs::create_dir(&stopped).unwrap();
@@ -1705,9 +1867,9 @@ fn reconnect_all_restarts_running_servers_and_preserves_client_registrations() {
         second_worker
     );
     assert_eq!(second_state()["ready"], true);
-    wait_for_exit(&old_worker);
-    wait_for_exit(&old_host);
-    wait_for_exit(&second_worker);
+    old_worker_process.wait_for_exit();
+    old_host_process.wait_for_exit();
+    second_worker_process.wait_for_exit();
     assert_eq!(fs::read(directory.join("config.json")).unwrap(), config);
     assert_eq!(
         fs::read(second_directory.join("config.json")).unwrap(),
@@ -1859,6 +2021,7 @@ fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
     success(&started);
     assert!(String::from_utf8_lossy(&started.stdout).contains("started in background"));
     let worker_pid = fixture.state()["pid"].as_u64().unwrap().to_string();
+    let worker_process = ProcessIdentity::capture(&worker_pid);
     success(&launch().output().unwrap());
     assert_eq!(
         fs::read_to_string(fixture.root.join("host-attempts")).unwrap(),
@@ -1874,7 +2037,7 @@ fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
             .output()
             .unwrap(),
     );
-    assert!(process_alive(&worker_pid));
+    assert!(worker_process.is_alive());
 
     // Recently exited commands can briefly retain the executable mapping.
     // The managed worker itself must not keep the installed binary locked.
@@ -1910,24 +2073,25 @@ fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
     let mut probe = [0; 5];
     socket.read_exact(&mut probe).unwrap();
     assert_eq!(&probe, b"probe");
-    let connections = fs::read_to_string(fixture.root.join("hc-connections")).unwrap();
+    let connections = hc_connections(&fixture);
     for (index, failure) in ["success-exit", "auth", "custom"].iter().enumerate() {
-        let previous_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+        let previous_process = fixture_identity(
+            &fixture
+                .root
+                .join(format!("host-attempt-{}/identity", index + 1)),
+        );
         trigger_host_failure(&fixture, failure);
         wait_until(|| {
             let state = fixture.state();
             state["ready"] == true && state["restarts"] == index + 1
         });
-        wait_for_exit(&previous_pid);
+        previous_process.wait_for_exit();
         let bytes = [0, 255, index as u8, b'\n'];
         socket.get_mut().write_all(&bytes).unwrap();
         let mut echo = [0; 4];
         socket.read_exact(&mut echo).unwrap();
         assert_eq!(echo, bytes);
-        assert_eq!(
-            fs::read_to_string(fixture.root.join("hc-connections")).unwrap(),
-            connections
-        );
+        assert_eq!(hc_connections(&fixture), connections);
     }
     let status = fixture.command("status").output().unwrap();
     success(&status);
@@ -1938,10 +2102,10 @@ fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
         worker_pid
     );
 
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let host_process = fixture_identity(&fixture.root.join("host-attempt-4/identity"));
     trigger_host_failure(&fixture, "exit");
-    wait_for_exit(&worker_pid);
-    wait_for_exit(&host_pid);
+    worker_process.wait_for_exit();
+    host_process.wait_for_exit();
     assert_eq!(fixture.state()["ready"], false);
     assert!(
         fixture.state()["message"]
@@ -1957,7 +2121,7 @@ fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
 #[test]
 fn managed_server_handles_readiness_timeout_and_stop_during_cooldown() {
     let fixture = Fixture::new();
-    let launch = |mode: &str, cooldown: &str, max_restarts: &str| {
+    let launch = |mode: &str, cooldown: &str, max_restarts: &str, timeout: &str| {
         let mut command = fixture.command("server");
         command
             .args([
@@ -1968,7 +2132,7 @@ fn managed_server_handles_readiness_timeout_and_stop_during_cooldown() {
                 "--session",
                 "work",
                 "--timeout",
-                "1",
+                timeout,
                 "--cooldown",
                 cooldown,
                 "--max-restarts",
@@ -1977,7 +2141,7 @@ fn managed_server_handles_readiness_timeout_and_stop_during_cooldown() {
             .env("HERDR_TEST_FIXTURE_HOST_MODE", mode);
         command
     };
-    success(&launch("no-ready-once", "2", "3").output().unwrap());
+    success(&launch("no-ready-once", "2", "3", "1").output().unwrap());
     assert_eq!(fixture.state()["ready"], true);
     assert_eq!(fixture.state()["restarts"], 1);
     assert_eq!(
@@ -1985,27 +2149,29 @@ fn managed_server_handles_readiness_timeout_and_stop_during_cooldown() {
         "2"
     );
     let worker_pid = fixture.state()["pid"].as_u64().unwrap().to_string();
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let worker_process = ProcessIdentity::capture(&worker_pid);
+    let host_process = fixture_identity(&fixture.root.join("host-attempt-2/identity"));
     trigger_host_failure(&fixture, "auth");
     wait_until(|| fixture.state()["message"] == "waiting to restart tunnel host");
     let status = fixture.command("status").output().unwrap();
     success(&status);
     assert!(String::from_utf8_lossy(&status.stdout).contains("ready=false"));
     success(&fixture.command("stop").output().unwrap());
-    wait_for_exit(&worker_pid);
-    wait_for_exit(&host_pid);
+    worker_process.wait_for_exit();
+    host_process.wait_for_exit();
     assert_eq!(fixture.state()["message"], "stopped");
     assert_eq!(
         fs::read_to_string(fixture.root.join("host-attempts")).unwrap(),
         "2"
     );
 
-    let failed = launch("never-ready", "0", "1").output().unwrap();
+    let failed = Running::start(launch("never-ready", "0", "1", "10"));
+    let final_host = fixture_identity(&fixture.root.join("host-attempt-4/identity"));
+    let failed = failed.output();
     assert!(!failed.status.success());
+    final_host.wait_for_exit();
     assert!(String::from_utf8_lossy(&failed.stderr).contains("exited during startup"));
     assert_eq!(fixture.state()["ready"], false);
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
-    wait_for_exit(&host_pid);
     assert!(
         fixture.state()["message"]
             .as_str()
@@ -2013,41 +2179,54 @@ fn managed_server_handles_readiness_timeout_and_stop_during_cooldown() {
             .contains("readiness timed out")
     );
 
-    let starting = Running::start(launch("never-ready", "30", "0"));
-    wait_until(|| {
-        fs::read_to_string(fixture.root.join("host-attempts")).is_ok_and(|attempts| attempts == "5")
-    });
+    let starting = Running::start(launch("never-ready", "30", "0", "120"));
+    let host_process = fixture_identity(&fixture.root.join("host-attempt-5/identity"));
+    assert!(host_process.is_alive(), "starting host already exited");
     wait_until(|| {
         let output = fixture.command("status").output().unwrap();
         output.status.success() && String::from_utf8_lossy(&output.stdout).contains("ready=false")
     });
     let worker_pid = fixture.state()["pid"].as_u64().unwrap().to_string();
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let worker_process = ProcessIdentity::capture(&worker_pid);
+    assert!(host_process.is_alive(), "starting host exited before stop");
     success(&fixture.command("stop").output().unwrap());
     assert!(!starting.output().status.success());
-    wait_for_exit(&worker_pid);
-    wait_for_exit(&host_pid);
+    worker_process.wait_for_exit();
+    host_process.wait_for_exit();
     assert_eq!(fixture.state()["message"], "stopped");
 }
 
 #[test]
 fn matching_server_fails_during_startup_and_recovery_then_succeeds_when_ready() {
     let fixture = Fixture::new();
-    let launch = |mode: &str, cooldown: &str| {
-        let mut command = fixture.connection("server");
+    let launch = |mode: &str, cooldown: &str, timeout: &str| {
+        let mut command = fixture.command("server");
         command
-            .args(["--cooldown", cooldown])
+            .args([
+                "--tunnel",
+                "fixture.use2",
+                "--port",
+                &fixture.port.to_string(),
+                "--session",
+                "work",
+                "--timeout",
+                timeout,
+                "--cooldown",
+                cooldown,
+            ])
             .env("HERDR_TEST_FIXTURE_HOST_MODE", mode);
         command
     };
 
-    let starting = Running::start(launch("never-ready", "30"));
+    let starting = Running::start(launch("never-ready", "30", "120"));
+    let starting_host = fixture_identity(&fixture.root.join("host-attempt-1/identity"));
+    assert!(starting_host.is_alive(), "starting host already exited");
     wait_until(|| {
         let output = fixture.command("status").output().unwrap();
         output.status.success() && String::from_utf8_lossy(&output.stdout).contains("ready=false")
     });
     let worker_pid = fixture.state()["pid"].as_u64().unwrap();
-    let retry = launch("never-ready", "30").output().unwrap();
+    let retry = launch("never-ready", "30", "120").output().unwrap();
     assert!(!retry.status.success());
     let stderr = String::from_utf8_lossy(&retry.stderr);
     assert!(stderr.contains("not ready"), "{stderr}");
@@ -2056,38 +2235,42 @@ fn matching_server_fails_during_startup_and_recovery_then_succeeds_when_ready() 
     assert!(!String::from_utf8_lossy(&retry.stdout).contains("already running"));
     assert_eq!(fixture.state()["pid"].as_u64(), Some(worker_pid));
     assert_eq!(fixture.state()["ready"], false);
+    assert!(starting_host.is_alive(), "starting host exited before stop");
     success(&fixture.command("stop").output().unwrap());
     assert!(!starting.output().status.success());
+    starting_host.wait_for_exit();
 
-    success(&launch("", "120").output().unwrap());
+    success(&launch("", "120", "5").output().unwrap());
     let worker_pid = fixture.state()["pid"].as_u64().unwrap();
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let worker_process = ProcessIdentity::capture(&worker_pid.to_string());
+    let host_process = fixture_identity(&fixture.root.join("host-attempt-2/identity"));
     trigger_host_failure(&fixture, "exit");
     wait_until(|| fixture.state()["message"] == "waiting to restart tunnel host");
-    let retry = launch("", "120").output().unwrap();
+    let retry = launch("", "120", "5").output().unwrap();
     assert!(!retry.status.success());
     assert!(String::from_utf8_lossy(&retry.stderr).contains("not ready"));
     assert_eq!(fixture.state()["pid"].as_u64(), Some(worker_pid));
     assert_eq!(fixture.state()["ready"], false);
     success(&fixture.command("stop").output().unwrap());
-    wait_for_exit(&worker_pid.to_string());
-    wait_for_exit(&host_pid);
+    worker_process.wait_for_exit();
+    host_process.wait_for_exit();
 
-    success(&launch("", "0").output().unwrap());
+    success(&launch("", "0", "5").output().unwrap());
     let worker_pid = fixture.state()["pid"].as_u64().unwrap();
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let worker_process = ProcessIdentity::capture(&worker_pid.to_string());
+    let host_process = fixture_identity(&fixture.root.join("host-attempt-3/identity"));
     trigger_host_failure(&fixture, "exit");
     wait_until(|| {
         let state = fixture.state();
         state["ready"] == true && state["restarts"] == 1
     });
-    wait_for_exit(&host_pid);
-    let ready = launch("", "0").output().unwrap();
+    host_process.wait_for_exit();
+    let ready = launch("", "0", "5").output().unwrap();
     success(&ready);
     assert!(String::from_utf8_lossy(&ready.stdout).contains("ready=true"));
     assert_eq!(fixture.state()["pid"].as_u64(), Some(worker_pid));
-    let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
+    let host_process = fixture_identity(&fixture.root.join("host-attempt-4/identity"));
     success(&fixture.command("stop").output().unwrap());
-    wait_for_exit(&worker_pid.to_string());
-    wait_for_exit(&host_pid);
+    worker_process.wait_for_exit();
+    host_process.wait_for_exit();
 }
