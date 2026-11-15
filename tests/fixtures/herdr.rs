@@ -5,6 +5,26 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::Duration;
 
+fn publish(root: &std::path::Path, name: &str, value: &str) {
+    let temporary = root.join(format!(".{name}.{}.tmp", std::process::id()));
+    std::fs::write(&temporary, value).unwrap();
+    let destination = root.join(name);
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        match std::fs::rename(&temporary, &destination) {
+            Ok(()) => break,
+            Err(error)
+                if cfg!(windows)
+                    && matches!(error.raw_os_error(), Some(32 | 33))
+                    && std::time::Instant::now() < deadline =>
+            {
+                thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => panic!("publish {}: {error}", destination.display()),
+        }
+    }
+}
+
 #[cfg(windows)]
 fn windows_command_line(line: &str) -> Vec<std::ffi::OsString> {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
@@ -264,16 +284,20 @@ fn main() {
                     std::process::exit(0);
                 });
             }
-            writeln!(
-                std::fs::OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(root.join("hc-connections"))
-                    .unwrap(),
-                "{}",
-                std::process::id()
-            )
-            .unwrap();
+            let attempt = (1u32..)
+                .find(|attempt| {
+                    match std::fs::create_dir(root.join(format!("hc-connection-{attempt}"))) {
+                        Ok(()) => true,
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                        Err(error) => panic!("{error}"),
+                    }
+                })
+                .unwrap();
+            publish(
+                &root.join(format!("hc-connection-{attempt}")),
+                "pid",
+                &std::process::id().to_string(),
+            );
             if std::env::var_os("HERDR_TEST_FIXTURE_EARLY_CLOSE").is_some() {
                 std::io::stdout().write_all(b"remote-closed").unwrap();
                 return;
@@ -370,7 +394,14 @@ fn main() {
             }
         }
         Some("connect") => {
-            std::fs::write(root.join("connect-pid"), std::process::id().to_string()).unwrap();
+            let pid = std::process::id().to_string();
+            publish(&root, "connect-pid", &pid);
+            if let Ok(gate) = std::env::var("HERDR_TEST_FIXTURE_CONNECT_GATE") {
+                publish(&root, &format!("connect-{gate}-identity"), &pid);
+                while !root.join(format!("connect-{gate}-release")).exists() {
+                    thread::sleep(Duration::from_millis(10));
+                }
+            }
             let listener = TcpListener::bind("127.0.0.1:0").unwrap();
             let local = listener.local_addr().unwrap().port();
             println!("\x1b[32mForwarding from 127.0.0.1:{local} to host port {port}.\x1b[0m");
@@ -392,14 +423,20 @@ fn main() {
             }
         }
         Some("host") => {
-            std::fs::write(root.join("host-pid"), std::process::id().to_string()).unwrap();
-            let attempts = root.join("host-attempts");
-            let attempt = match std::fs::read_to_string(&attempts) {
-                Ok(value) => value.parse::<u32>().unwrap() + 1,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => 1,
-                Err(error) => panic!("{error}"),
-            };
-            std::fs::write(attempts, attempt.to_string()).unwrap();
+            let attempt = (1u32..)
+                .find(|attempt| {
+                    match std::fs::create_dir(root.join(format!("host-attempt-{attempt}"))) {
+                        Ok(()) => true,
+                        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => false,
+                        Err(error) => panic!("{error}"),
+                    }
+                })
+                .unwrap();
+            let pid = std::process::id().to_string();
+            let attempt_dir = root.join(format!("host-attempt-{attempt}"));
+            publish(&attempt_dir, "identity", &pid);
+            publish(&root, "host-pid", &pid);
+            publish(&root, "host-attempts", &attempt.to_string());
             let mode = std::env::var("HERDR_TEST_FIXTURE_HOST_MODE").unwrap_or_default();
             if mode != "never-ready" && !(mode == "no-ready-once" && attempt == 1) {
                 println!("Ready to accept connections for tunnel: fixture.{cluster}");

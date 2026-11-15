@@ -379,15 +379,13 @@ async fn setup(args: SetupArgs) -> Result<()> {
     if !json {
         println!("Use the SAME Dev Tunnels account and identity provider on both machines.");
         if role != Role::Client {
-            println!("Server: hd herdr server --tunnel UNIQUE-NAME");
+            println!("Server: hd server --tunnel UNIQUE-NAME");
             println!("The server creates a missing tunnel/port or reuses a valid private tunnel.");
             println!("It runs in the background and returns only after tunnel readiness.");
-            println!(
-                "Manage: hd herdr status; hd herdr stop (add --name PROFILE for named servers)."
-            );
+            println!("Manage: hd status; hd stop (add --name PROFILE for named servers).");
         }
         if role != Role::Server {
-            println!("Client: hd herdr client --name remote --tunnel NAME.CLUSTER");
+            println!("Client: hd client --name remote --tunnel NAME.CLUSTER");
             println!("Verify: hc machine ls; hc exec --on remote whoami");
             println!("Use Herdr App with this local core; do not add the machine through SSH.");
         }
@@ -458,7 +456,6 @@ async fn add(args: ClientArgs) -> Result<()> {
     let exe = via_path(std::env::current_exe()?.canonicalize()?)?;
     let via = [
         exe,
-        "herdr".into(),
         "connect".into(),
         "--tunnel".into(),
         c.tunnel,
@@ -814,14 +811,7 @@ impl Tunnel {
         // when the connector itself is abruptly terminated.
         supervisor.kill_on_drop(false);
         let mut child = supervisor
-            .args([
-                "herdr",
-                "_tunnel",
-                mode,
-                "--tunnel",
-                &c.tunnel,
-                "--devtunnel",
-            ])
+            .args(["_tunnel", mode, "--tunnel", &c.tunnel, "--devtunnel"])
             .arg(executable(&c.tools.devtunnel)?)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1102,7 +1092,9 @@ async fn accept_connections(
     while let Some(joined) = connections.join_next().await {
         result = combine_results(
             result,
-            joined.context("Bridge task failed").and_then(|result| result),
+            joined
+                .context("Bridge task failed")
+                .and_then(|result| result),
         );
     }
     result
@@ -1196,7 +1188,7 @@ async fn watch_host(
                 if !ready && line.contains("Ready to accept connections for tunnel:") {
                     ready = true;
                     reporter.update(c, true, restarts, "ready")?;
-                    eprintln!("[herdr] CLIENT COMMAND: hd herdr client --name remote --tunnel {} --port {} --session {}", c.tunnel, c.port, c.session);
+                    eprintln!("[herdr] CLIENT COMMAND: hd client --name remote --tunnel {} --port {} --session {}", c.tunnel, c.port, c.session);
                 }
             }
         }

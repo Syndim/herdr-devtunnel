@@ -100,23 +100,21 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         result.push('"');
         result
     };
-    let target = |path: &Path| {
-        [
-            path.to_str().unwrap(),
-            "herdr",
-            "connect",
-            "--tunnel",
-            "test.use2",
-        ]
-        .iter()
-        .map(|arg| quote(arg))
-        .collect::<Vec<_>>()
-        .join(" ")
+    let target = |path: &Path, legacy: bool| {
+        let mut words = vec![path.to_str().unwrap()];
+        if legacy {
+            words.push("herdr");
+        }
+        words.extend(["connect", "--tunnel", "test.use2"]);
+        words
+            .iter()
+            .map(|arg| quote(arg))
+            .collect::<Vec<_>>()
+            .join(" ")
     };
-    let valid = target(&registered);
     let full = format!(
         "{} {} {} {} {} {} {} {} {}",
-        target(&registered),
+        target(&registered, false),
         quote("--port"),
         quote("43821"),
         quote("--session"),
@@ -136,20 +134,34 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         .join("subdir")
         .join("..")
         .join(registered.file_name().unwrap());
+    let legacy_full = full.replacen(
+        &quote("connect"),
+        &format!("{} {}", quote("herdr"), quote("connect")),
+        1,
+    );
     let mut machines = serde_json::json!({"machines": [
-        {"name":"ours", "target":valid, "via":true},
+        {"name":"root", "target":target(&registered, false), "via":true},
+        {"name":"legacy", "target":target(&registered, true), "via":true},
         {"name":"complete", "target":full, "via":true},
-        {"name":"normalized", "target":target(&normalized), "via":true},
-        {"name":"copy", "target":target(&copy), "via":true},
-        {"name":"other", "target":target(&hc), "via":true},
-        {"name":"missing", "target":target(&root.join("missing")), "via":true},
-        {"name":"ssh", "target":target(&registered), "via":false},
-        {"name":"unrelated", "target":format!("{}{}", target(&registered), bad_suffix), "via":true},
-        {"name":"relative", "target":target(Path::new("hd")), "via":true},
+        {"name":"legacy-complete", "target":legacy_full, "via":true},
+        {"name":"normalized", "target":target(&normalized, false), "via":true},
+        {"name":"legacy-normalized", "target":target(&normalized, true), "via":true},
+        {"name":"copy", "target":target(&copy, false), "via":true},
+        {"name":"legacy-copy", "target":target(&copy, true), "via":true},
+        {"name":"other", "target":target(&hc, false), "via":true},
+        {"name":"missing", "target":target(&root.join("missing"), true), "via":true},
+        {"name":"ssh", "target":target(&registered, false), "via":false},
+        {"name":"unrelated", "target":format!("{}{}", target(&registered, false), bad_suffix), "via":true},
+        {"name":"legacy-unrelated", "target":format!("{}{}", target(&registered, true), bad_suffix), "via":true},
+        {"name":"relative", "target":target(Path::new("hd"), false), "via":true},
+        {"name":"legacy-relative", "target":target(Path::new("hd"), true), "via":true},
+        {"name":"duplicate", "target":format!("{} {} {} {} {}", target(&registered, false), quote("--port"), quote("1"), quote("--port"), quote("2")), "via":true},
+        {"name":"legacy-duplicate", "target":format!("{} {} {}", target(&registered, true), quote("--tunnel"), quote("other.use2")), "via":true},
+        {"name":"nested", "target":format!("{} {} {} {} {}", quote(registered.to_str().unwrap()), quote("herdr"), quote("herdr"), quote("connect"), quote("--tunnel")) + &format!(" {}", quote("test.use2")), "via":true},
     ]});
     #[cfg(windows)]
     machines["machines"].as_array_mut().unwrap().push(serde_json::json!({
-        "name":"escaped", "target":format!("{} {} {}", target(&registered), quote("--devtunnel"), quote("C:\\folder\\\"quoted\\\\")), "via":true
+        "name":"escaped", "target":format!("{} {} {}", target(&registered, true), quote("--devtunnel"), quote("C:\\folder\\\"quoted\\\\")), "via":true
     }));
     #[cfg(unix)]
     {
@@ -158,8 +170,9 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         std::os::unix::fs::symlink(&registered, &alias).unwrap();
         std::os::unix::fs::symlink(&copy, &wrong_alias).unwrap();
         machines["machines"].as_array_mut().unwrap().extend([
-            serde_json::json!({"name":"symlink", "target":target(&alias), "via":true}),
-            serde_json::json!({"name":"other-symlink", "target":target(&wrong_alias), "via":true}),
+            serde_json::json!({"name":"symlink", "target":target(&alias, false), "via":true}),
+            serde_json::json!({"name":"legacy-symlink", "target":target(&alias, true), "via":true}),
+            serde_json::json!({"name":"other-symlink", "target":target(&wrong_alias, true), "via":true}),
         ]);
     }
     fs::write(
@@ -172,7 +185,6 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
     fs::rename(&upgrade, &registered).unwrap();
     let output = Command::new(&registered)
         .args([
-            "herdr",
             "reconnect",
             "--all",
             "--role",
@@ -193,12 +205,6 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         String::from_utf8_lossy(&output.stderr)
     );
     let calls = fs::read_to_string(root.join("calls")).unwrap();
-    let expected_calls = 5;
-    assert_eq!(
-        calls.matches("args: connect --session wanted").count(),
-        expected_calls
-    );
-    assert_eq!(calls.matches("socket: None").count(), expected_calls);
     let connected: Vec<_> = calls
         .lines()
         .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
@@ -206,10 +212,33 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         .map(|request| request["params"]["machine"].as_str().unwrap().to_string())
         .collect();
     let expected = if cfg!(unix) {
-        vec!["ours", "complete", "normalized", "symlink"]
+        vec![
+            "root",
+            "legacy",
+            "complete",
+            "legacy-complete",
+            "normalized",
+            "legacy-normalized",
+            "symlink",
+            "legacy-symlink",
+        ]
     } else {
-        vec!["ours", "complete", "normalized", "escaped"]
+        vec![
+            "root",
+            "legacy",
+            "complete",
+            "legacy-complete",
+            "normalized",
+            "legacy-normalized",
+            "escaped",
+        ]
     };
     assert_eq!(connected, expected);
+    let expected_calls = expected.len() + 1;
+    assert_eq!(
+        calls.matches("args: connect --session wanted").count(),
+        expected_calls
+    );
+    assert_eq!(calls.matches("socket: None").count(), expected_calls);
     fs::remove_dir_all(root).unwrap();
 }

@@ -67,14 +67,7 @@ esac
 
     fn run(&self, tunnel: &str, code: i32, stdout: &str, stderr: &str) -> Output {
         Command::new(env!("CARGO_BIN_EXE_hd"))
-            .args([
-                "herdr",
-                "server",
-                "--foreground",
-                "--tunnel",
-                tunnel,
-                "--port",
-            ])
+            .args(["server", "--foreground", "--tunnel", tunnel, "--port"])
             .arg(self.port.to_string())
             .args(["--timeout", "5", "--hc"])
             .arg(&self.tool)
