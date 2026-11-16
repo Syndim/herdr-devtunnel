@@ -532,11 +532,17 @@ fn binary_help_identifies_hd() {
         "stop",
         "reconnect",
         "client",
-        "copilot-status",
+        "agent",
     ] {
         assert!(commands.contains(&name), "missing {name}: {stdout}");
     }
-    for name in ["herdr", "connect", "_tunnel", "server-worker"] {
+    for name in [
+        "herdr",
+        "connect",
+        "_tunnel",
+        "server-worker",
+        "copilot-status",
+    ] {
         assert!(!commands.contains(&name), "unexpected {name}: {stdout}");
     }
 }
