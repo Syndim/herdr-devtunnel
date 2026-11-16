@@ -196,11 +196,6 @@ fn is_our_transport_words(words: &[String], current_exe: &Path) -> bool {
     let Some((executable, args)) = words.split_first() else {
         return false;
     };
-    let args = if args.first().is_some_and(|arg| arg == "herdr") {
-        &args[1..]
-    } else {
-        args
-    };
     if args.len() < 3 || args[..2] != ["connect", "--tunnel"] || parse_tunnel(&args[2]).is_err() {
         return false;
     }
@@ -381,152 +376,147 @@ mod tests {
     }
 
     #[test]
-    fn transport_recognition_validates_both_command_forms() {
+    fn transport_recognition_validates_command_form() {
         let exe = std::env::current_exe().unwrap();
         let exe_str = exe.to_str().unwrap();
-        for legacy in [false, true] {
-            let mut prefix = vec![exe_str];
-            if legacy {
-                prefix.push("herdr");
-            }
-            for (args, expected) in [
-                (vec!["connect", "--tunnel", "abc.use2"], true),
-                (
-                    vec![
-                        "connect",
-                        "--tunnel",
-                        "abc.use2",
-                        "--timeout",
-                        "600",
-                        "--port",
-                        "65535",
-                        "--session",
-                        "work",
-                        "--devtunnel",
-                        "path with spaces",
-                    ],
-                    true,
-                ),
-                (vec!["connect", "--tunnel", "a"], false),
-                (vec!["connect", "--tunnel", "bad;command"], false),
-                (vec!["connect", "--tunnel"], false),
-                (vec!["connect", "--tunnel=abc.use2"], false),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--tunnel", "other"],
-                    false,
-                ),
-                (
-                    vec![
-                        "connect", "--tunnel", "abc.use2", "--port", "1", "--port", "2",
-                    ],
-                    false,
-                ),
-                (
-                    vec![
-                        "connect",
-                        "--tunnel",
-                        "abc.use2",
-                        "--session",
-                        "one",
-                        "--session",
-                        "two",
-                    ],
-                    false,
-                ),
-                (
-                    vec![
-                        "connect",
-                        "--tunnel",
-                        "abc.use2",
-                        "--timeout",
-                        "1",
-                        "--timeout",
-                        "2",
-                    ],
-                    false,
-                ),
-                (
-                    vec![
-                        "connect",
-                        "--tunnel",
-                        "abc.use2",
-                        "--devtunnel",
-                        "one",
-                        "--devtunnel",
-                        "two",
-                    ],
-                    false,
-                ),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--port", "0"],
-                    false,
-                ),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--port", "65536"],
-                    false,
-                ),
-                (
-                    vec![
-                        "connect",
-                        "--tunnel",
-                        "abc.use2",
-                        "--session",
-                        "bad session",
-                    ],
-                    false,
-                ),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--timeout", "0"],
-                    false,
-                ),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--timeout", "601"],
-                    false,
-                ),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--devtunnel", ""],
-                    false,
-                ),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--hc", "evil"],
-                    false,
-                ),
-                (
-                    vec!["connect", "--tunnel", "abc.use2", "--bootstrap", "evil"],
-                    false,
-                ),
-                (vec!["connect", "--tunnel", "abc.use2", "--session"], false),
-                (vec!["connect", "--tunnel", "abc.use2", "extra"], false),
-                (vec!["connect", "connect", "--tunnel", "abc.use2"], false),
-                (vec!["herdr", "connect", "--tunnel", "abc.use2"], !legacy),
-                (vec!["client", "--tunnel", "abc.use2"], false),
+        let prefix = [exe_str];
+        for (args, expected) in [
+            (vec!["connect", "--tunnel", "abc.use2"], true),
+            (
+                vec![
+                    "connect",
+                    "--tunnel",
+                    "abc.use2",
+                    "--timeout",
+                    "600",
+                    "--port",
+                    "65535",
+                    "--session",
+                    "work",
+                    "--devtunnel",
+                    "path with spaces",
+                ],
+                true,
+            ),
+            (vec!["connect", "--tunnel", "a"], false),
+            (vec!["connect", "--tunnel", "bad;command"], false),
+            (vec!["connect", "--tunnel"], false),
+            (vec!["connect", "--tunnel=abc.use2"], false),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--tunnel", "other"],
+                false,
+            ),
+            (
+                vec![
+                    "connect", "--tunnel", "abc.use2", "--port", "1", "--port", "2",
+                ],
+                false,
+            ),
+            (
+                vec![
+                    "connect",
+                    "--tunnel",
+                    "abc.use2",
+                    "--session",
+                    "one",
+                    "--session",
+                    "two",
+                ],
+                false,
+            ),
+            (
+                vec![
+                    "connect",
+                    "--tunnel",
+                    "abc.use2",
+                    "--timeout",
+                    "1",
+                    "--timeout",
+                    "2",
+                ],
+                false,
+            ),
+            (
+                vec![
+                    "connect",
+                    "--tunnel",
+                    "abc.use2",
+                    "--devtunnel",
+                    "one",
+                    "--devtunnel",
+                    "two",
+                ],
+                false,
+            ),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--port", "0"],
+                false,
+            ),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--port", "65536"],
+                false,
+            ),
+            (
+                vec![
+                    "connect",
+                    "--tunnel",
+                    "abc.use2",
+                    "--session",
+                    "bad session",
+                ],
+                false,
+            ),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--timeout", "0"],
+                false,
+            ),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--timeout", "601"],
+                false,
+            ),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--devtunnel", ""],
+                false,
+            ),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--hc", "evil"],
+                false,
+            ),
+            (
+                vec!["connect", "--tunnel", "abc.use2", "--bootstrap", "evil"],
+                false,
+            ),
+            (vec!["connect", "--tunnel", "abc.use2", "--session"], false),
+            (vec!["connect", "--tunnel", "abc.use2", "extra"], false),
+            (vec!["connect", "connect", "--tunnel", "abc.use2"], false),
+            (vec!["herdr", "connect", "--tunnel", "abc.use2"], false),
+            (vec!["client", "--tunnel", "abc.use2"], false),
+        ] {
+            let words = prefix.iter().copied().chain(args).collect::<Vec<_>>();
+            let unix = words
+                .iter()
+                .map(|word| super::shell_quote(word))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let windows = words
+                .iter()
+                .map(|word| crate::herdr::validation::windows_quote(word))
+                .collect::<Vec<_>>()
+                .join(" ");
+            #[cfg(not(windows))]
+            let native = &unix;
+            #[cfg(windows)]
+            let native = &windows;
+            assert_eq!(is_our_transport(native, &exe), expected, "{words:?}");
+            for parsed in [
+                unix_transport_words(&unix),
+                windows_transport_words(&windows),
             ] {
-                let words = prefix.iter().copied().chain(args).collect::<Vec<_>>();
-                let unix = words
-                    .iter()
-                    .map(|word| super::shell_quote(word))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                let windows = words
-                    .iter()
-                    .map(|word| crate::herdr::validation::windows_quote(word))
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                #[cfg(not(windows))]
-                let native = &unix;
-                #[cfg(windows)]
-                let native = &windows;
-                assert_eq!(is_our_transport(native, &exe), expected, "{words:?}");
-                for parsed in [
-                    unix_transport_words(&unix),
-                    windows_transport_words(&windows),
-                ] {
-                    assert_eq!(
-                        is_our_transport_words(&parsed.unwrap(), &exe),
-                        expected,
-                        "{words:?}"
-                    );
-                }
+                assert_eq!(
+                    is_our_transport_words(&parsed.unwrap(), &exe),
+                    expected,
+                    "{words:?}"
+                );
             }
         }
         for path in ["hd", "", "missing"] {

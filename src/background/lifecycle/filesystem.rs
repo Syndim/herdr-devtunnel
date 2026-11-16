@@ -1,4 +1,4 @@
-use std::fs::{self, File, TryLockError};
+use std::fs;
 use std::path::Path;
 
 use anyhow::{Context, Result};

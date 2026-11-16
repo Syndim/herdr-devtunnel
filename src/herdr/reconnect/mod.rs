@@ -32,7 +32,7 @@ pub struct Arguments {
     pub(super) timeout: u64,
 }
 
-pub(super) async fn run(args: Arguments) -> Result<()> {
+pub(crate) async fn run(args: Arguments) -> Result<()> {
     let mut failures = Vec::new();
     if args.role != Role::Client
         && let Err(error) = background::reconnect_all()

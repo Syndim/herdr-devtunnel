@@ -1,4 +1,4 @@
 mod register;
 mod transport;
 
-pub(super) use register::add;
+pub(crate) use register::add;
