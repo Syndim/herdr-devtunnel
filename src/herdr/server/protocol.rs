@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::timeout;
 
-pub(super) const MAGIC: &str = "herdr-devtunnel/1";
+pub(super) const MAGIC: &str = "syndim/herdr-devtunnel/v1";
 pub(crate) const HANDSHAKE_LIMIT: usize = 4096;
 pub(crate) fn validate_bootstrap(line: &str, session: &str) -> Result<()> {
     let pattern = Regex::new(

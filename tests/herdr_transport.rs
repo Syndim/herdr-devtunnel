@@ -822,8 +822,8 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     for data in [
         b"GET / HTTP/1.1\r\n".to_vec(),
         b"{\"protocol\":\"wrong\",\"session\":\"work\"}\n".to_vec(),
-        b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"wrong\"}\n".to_vec(),
-        b"{\"protocol\":\"herdr-devtunnel/1\"}\n".to_vec(),
+        b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"wrong\"}\n".to_vec(),
+        b"{\"protocol\":\"syndim/herdr-devtunnel/v1\"}\n".to_vec(),
         vec![b'x'; 4097],
     ] {
         let mut socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
@@ -852,7 +852,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         .unwrap();
     socket.write_all(b"{\"protocol\":").unwrap();
     socket
-        .write_all(b"\"herdr-devtunnel/1\",\"session\":\"work\"}\n\0\xffpayload")
+        .write_all(b"\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\n\0\xffpayload")
         .unwrap();
     socket.shutdown(Shutdown::Write).unwrap();
     let mut response = Vec::new();
@@ -1534,7 +1534,7 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
         let mut socket = BufReader::new(socket);
         socket
             .get_mut()
-            .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\nprobe")
+            .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nprobe")
             .unwrap();
         let mut hello = String::new();
         socket.read_line(&mut hello).unwrap();
@@ -1571,7 +1571,9 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
     let mut socket = BufReader::new(socket);
     socket
         .get_mut()
-        .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\nreconnected")
+        .write_all(
+            b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nreconnected",
+        )
         .unwrap();
     let mut hello = String::new();
     socket.read_line(&mut hello).unwrap();
@@ -1617,7 +1619,7 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     let mut socket = BufReader::new(socket);
     socket
         .get_mut()
-        .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\nprobe")
+        .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nprobe")
         .unwrap();
     let mut hello = String::new();
     socket.read_line(&mut hello).unwrap();
@@ -1997,7 +1999,7 @@ fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     socket
-        .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\n")
+        .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\n")
         .unwrap();
     let mut socket = BufReader::new(socket);
     let mut hello = String::new();

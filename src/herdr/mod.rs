@@ -137,7 +137,7 @@ mod tests {
     #[tokio::test]
     async fn handshake_preserves_coalesced_binary_and_bounds_input() {
         let mut bytes =
-            &b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\n\x00\xffrest"[..];
+            &b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\n\x00\xffrest"[..];
         let hello = read_hello(&mut bytes, 1).await.unwrap();
         assert_eq!(hello.session, "work");
         assert_eq!(bytes, b"\x00\xffrest");
