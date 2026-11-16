@@ -1,5 +1,9 @@
-mod dt;
+mod agent;
+mod config;
+mod devtunnel;
+mod diagnostics;
 mod herdr;
+mod process;
 
 use anyhow::Result;
 use clap::{Parser, Subcommand};

@@ -11,12 +11,12 @@ use tokio::task::JoinSet;
 use tokio::time::timeout;
 
 use super::background::Reporter;
-use super::config::{ConnectArgs, Connection, ServerArgs, executable};
-use super::process::combine_results;
-use super::protocol::{MAGIC, bridge, read_hello, validate_bootstrap, write_hello};
-use super::tunnel::{Tunnel, prepare_tunnel, shutdown_signal};
+use crate::config::{ConnectArgs, Connection, ServerArgs, executable};
+use crate::devtunnel::tunnel::{Tunnel, prepare_tunnel, shutdown_signal};
+use crate::herdr::protocol::{MAGIC, bridge, read_hello, validate_bootstrap, write_hello};
+use crate::process::combine_results;
 pub(super) async fn serve(args: ServerArgs, reporter: &Reporter) -> Result<()> {
-    let matchers = crate::dt::build_failure_matchers(&args.patterns)?;
+    let matchers = crate::devtunnel::build_failure_matchers(&args.patterns)?;
     let mut c = args.connection.clone();
     let hc = executable(&c.tools.hc)?;
     // Bind before publishing, so a busy port never exposes an unrelated service.
@@ -201,7 +201,7 @@ async fn watch_host(
             _ = &mut deadline, if !ready => bail!("devtunnel host readiness timed out"),
             line = tunnel.lines.recv() => {
                 let line = line.context("devtunnel host output closed")?;
-                ensure!(!crate::dt::line_indicates_failure(matchers, &line),
+                ensure!(!crate::devtunnel::line_indicates_failure(matchers, &line),
                     "Detected devtunnel failure signature: {line}");
                 if !ready && line.contains("Ready to accept connections for tunnel:") {
                     ready = true;

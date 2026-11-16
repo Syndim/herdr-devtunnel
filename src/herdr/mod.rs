@@ -1,22 +1,18 @@
-mod agent;
 pub(crate) mod background;
 mod client;
-mod config;
-mod diagnostics;
-mod policy;
-mod process;
-mod protocol;
+pub(crate) mod protocol;
 mod reconnect;
-mod server_runtime;
-pub(crate) mod terminal_status;
+mod server;
+
 #[cfg(test)]
 mod tests;
-mod tunnel;
 
 use anyhow::Result;
 use clap::{Args, Subcommand};
 
-pub(super) use config::{ClientArgs, ConnectArgs, DoctorArgs, ServerArgs, SetupArgs, TunnelArgs};
+pub(super) use crate::config::{
+    ClientArgs, ConnectArgs, DoctorArgs, ServerArgs, SetupArgs, TunnelArgs,
+};
 
 #[derive(Args)]
 #[command(about = "Connect Herdr cores through owner-only private Dev Tunnels (no SSH)")]
@@ -28,10 +24,10 @@ pub struct Arguments {
 #[derive(Subcommand)]
 pub enum Commands {
     /// Install agent integrations and report lifecycle status to Herdr.
-    Agent(agent::Arguments),
+    Agent(crate::agent::Arguments),
     /// Legacy Copilot hook entry point; use `agent status` instead.
     #[command(hide = true)]
-    CopilotStatus(copilot_status::Arguments),
+    CopilotStatus(crate::agent::copilot_status::Arguments),
     /// Check prerequisites and print server/client setup instructions.
     Setup(SetupArgs),
     /// Check hc capabilities, devtunnel login, and the local shell requirement.
@@ -57,8 +53,6 @@ pub enum Commands {
     ServerWorker(background::WorkerArgs),
 }
 
-mod copilot_status;
-
 impl Commands {
     pub(crate) fn run(self) -> Result<()> {
         let command = match self {
@@ -70,18 +64,18 @@ impl Commands {
         let result = runtime.block_on(async {
             match command {
                 Self::Agent(_) | Self::CopilotStatus(_) => unreachable!(),
-                Self::Doctor(args) => diagnostics::doctor(args).await,
-                Self::Setup(args) => diagnostics::setup(args).await,
+                Self::Doctor(args) => crate::diagnostics::doctor(args).await,
+                Self::Setup(args) => crate::diagnostics::setup(args).await,
                 Self::Server(args) if args.foreground => {
-                    server_runtime::serve(args, &background::Reporter::foreground()).await
+                    server::serve(args, &background::Reporter::foreground()).await
                 }
                 Self::Server(args) => background::start(args),
                 Self::Status(args) => background::status(args),
                 Self::Stop(args) => background::stop(args),
                 Self::Reconnect(args) => reconnect::run(args).await,
                 Self::Client(args) => client::add(args).await,
-                Self::Connect(args) => server_runtime::connect(args).await,
-                Self::Tunnel(args) => tunnel::tunnel_worker(args).await,
+                Self::Connect(args) => server::connect(args).await,
+                Self::Tunnel(args) => crate::devtunnel::tunnel::tunnel_worker(args).await,
                 Self::ServerWorker(args) => background::worker(args).await,
             }
         });

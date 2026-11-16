@@ -10,8 +10,8 @@ use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::time::timeout;
 
-use super::process::{combine_results, command};
-use super::server_runtime::stopped;
+use super::server::stopped;
+use crate::process::{combine_results, command};
 
 pub(super) const MAGIC: &str = "herdr-devtunnel/1";
 pub(super) const HANDSHAKE_LIMIT: usize = 4096;
@@ -39,7 +39,7 @@ pub(super) struct Hello {
     pub(super) ok: Option<bool>,
 }
 
-pub(super) async fn read_line(
+pub(crate) async fn read_line(
     reader: &mut (impl AsyncRead + Unpin),
     limit: usize,
 ) -> Result<Vec<u8>> {

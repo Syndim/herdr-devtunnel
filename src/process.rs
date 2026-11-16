@@ -57,7 +57,7 @@ pub(super) async fn lookup_tunnel(
 ) -> Result<Option<Value>> {
     let args = ["show", tunnel, "--json"];
     let result = run_output(path, &args, seconds).await?;
-    if crate::dt::tunnel_not_found(&result, tunnel) {
+    if crate::devtunnel::tunnel_not_found(&result, tunnel) {
         return Ok(None);
     }
     let detail = checked_output(path, &args, result)?;

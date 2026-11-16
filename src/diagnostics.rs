@@ -6,10 +6,10 @@ use serde_json::json;
 use tokio::process::Command;
 
 #[cfg(not(windows))]
-use super::config::client_shell;
-use super::config::{Role, executable};
-use super::process::output;
-use super::{DoctorArgs, SetupArgs};
+use crate::config::client_shell;
+use crate::config::{DoctorArgs, SetupArgs};
+use crate::config::{Role, executable};
+use crate::process::output;
 #[derive(Serialize)]
 struct Check {
     name: &'static str,

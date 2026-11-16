@@ -4,13 +4,13 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::config::Connection;
-use super::process::output;
+use crate::config::Connection;
+use crate::process::output;
 fn tunnel_value(value: &Value) -> &Value {
     value.get("tunnel").unwrap_or(value)
 }
 
-pub(super) fn tunnel_id(value: &Value, fallback: &str) -> String {
+pub(crate) fn tunnel_id(value: &Value, fallback: &str) -> String {
     let t = tunnel_value(value);
     match (t["tunnelId"].as_str(), t["clusterId"].as_str()) {
         (Some(id), _) if id.contains('.') => id.into(),
@@ -19,7 +19,7 @@ pub(super) fn tunnel_id(value: &Value, fallback: &str) -> String {
     }
 }
 
-pub(super) fn empty_acl(value: &Value) -> Result<bool> {
+pub(crate) fn empty_acl(value: &Value) -> Result<bool> {
     match value {
         Value::Array(entries) => Ok(entries.is_empty()),
         Value::Object(object) => match object.get("entries") {
@@ -30,7 +30,7 @@ pub(super) fn empty_acl(value: &Value) -> Result<bool> {
     }
 }
 
-pub(super) fn validate_ports(ports: &[Value], port: u16) -> Result<()> {
+pub(crate) fn validate_ports(ports: &[Value], port: u16) -> Result<()> {
     ensure!(
         ports.len() <= 1
             && ports
@@ -51,7 +51,7 @@ pub(super) fn validate_ports(ports: &[Value], port: u16) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn validate_tunnel(value: &Value, port: u16) -> Result<()> {
+pub(crate) fn validate_tunnel(value: &Value, port: u16) -> Result<()> {
     let t = tunnel_value(value);
     match t.get("ports") {
         Some(Value::Array(ports)) => validate_ports(ports, port)?,
@@ -67,7 +67,7 @@ pub(super) fn validate_tunnel(value: &Value, port: u16) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn port_list(value: &Value) -> Result<&[Value]> {
+pub(crate) fn port_list(value: &Value) -> Result<&[Value]> {
     let object = value.as_object().context("Unrecognized tunnel port list")?;
     match (object.get("ports"), object.get("warning"), object.len()) {
         (Some(Value::Array(ports)), None, 1) => Ok(ports),
@@ -115,7 +115,7 @@ async fn validate_policy(c: &Connection, dt: &PathBuf, port: Option<u16>) -> Res
     Ok(())
 }
 
-pub(super) async fn validate_private_tunnel(
+pub(crate) async fn validate_private_tunnel(
     c: &Connection,
     dt: &PathBuf,
     detail: &Value,

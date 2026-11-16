@@ -102,6 +102,6 @@ fn write_terminal(sequence: &[u8]) -> Result<()> {
             AttachConsole(ATTACH_PARENT_PROCESS).context("Attach Copilot's terminal console")?;
         }
     }
-    super::terminal_status::write_terminal(sequence)
+    crate::agent::terminal_status::write_terminal(sequence)
         .context("Write Copilot status to Herdr terminal")
 }

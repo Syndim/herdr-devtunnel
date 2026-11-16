@@ -8,18 +8,18 @@ use tokio::io::AsyncRead;
 use tokio::process::{Child, ChildStdin};
 use tokio::time::timeout;
 
-use super::config::{Connection, TunnelArgs, executable};
-use super::policy::{tunnel_id, validate_private_tunnel};
-use super::process::{command, lookup_tunnel, output};
-use super::protocol::read_line;
-pub(super) struct Tunnel {
-    pub(super) child: Child,
+use crate::config::{Connection, TunnelArgs, executable};
+use crate::devtunnel::policy::{tunnel_id, validate_private_tunnel};
+use crate::herdr::protocol::read_line;
+use crate::process::{command, lookup_tunnel, output};
+pub(crate) struct Tunnel {
+    pub(crate) child: Child,
     lifetime: Option<ChildStdin>,
-    pub(super) lines: tokio::sync::mpsc::Receiver<String>,
+    pub(crate) lines: tokio::sync::mpsc::Receiver<String>,
 }
 
 impl Tunnel {
-    pub(super) fn start(c: &Connection, mode: &str) -> Result<Self> {
+    pub(crate) fn start(c: &Connection, mode: &str) -> Result<Self> {
         let mut supervisor = command(std::env::current_exe()?);
         // EOF, not killing this supervisor, must reap the official CLI even
         // when the connector itself is abruptly terminated.
@@ -69,7 +69,7 @@ impl Tunnel {
         })
     }
 
-    pub(super) async fn stop(&mut self) -> Result<()> {
+    pub(crate) async fn stop(&mut self) -> Result<()> {
         drop(self.lifetime.take());
         match timeout(Duration::from_secs(8), self.child.wait()).await {
             Ok(result) => {
@@ -81,7 +81,7 @@ impl Tunnel {
     }
 }
 
-pub(super) async fn tunnel_worker(args: TunnelArgs) -> Result<()> {
+pub(crate) async fn tunnel_worker(args: TunnelArgs) -> Result<()> {
     let mut child = command(executable(&args.devtunnel)?)
         .args([&args.mode, &args.tunnel])
         .stdin(Stdio::null())
@@ -108,7 +108,7 @@ pub(super) async fn tunnel_worker(args: TunnelArgs) -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn shutdown_signal() -> Result<()> {
+pub(crate) async fn shutdown_signal() -> Result<()> {
     #[cfg(unix)]
     {
         let mut terminate =
@@ -123,7 +123,7 @@ pub(super) async fn shutdown_signal() -> Result<()> {
     Ok(())
 }
 
-pub(super) async fn prepare_tunnel(c: &mut Connection) -> Result<()> {
+pub(crate) async fn prepare_tunnel(c: &mut Connection) -> Result<()> {
     let cluster = c
         .tunnel
         .rsplit_once('.')

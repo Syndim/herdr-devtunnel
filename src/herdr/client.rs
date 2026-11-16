@@ -3,14 +3,14 @@ use tokio::process::Command;
 
 use super::ClientArgs;
 #[cfg(not(windows))]
-use super::config::client_shell;
+use crate::config::client_shell;
 #[cfg(not(windows))]
-use super::config::shell_quote;
+use crate::config::shell_quote;
 #[cfg(windows)]
-use super::config::windows_quote;
-use super::config::{executable, via_path};
+use crate::config::windows_quote;
+use crate::config::{executable, via_path};
 #[cfg(windows)]
-use super::diagnostics::check_via_contract;
+use crate::diagnostics::check_via_contract;
 pub(super) async fn add(args: ClientArgs) -> Result<()> {
     let c = args.connection;
     let hc = executable(&c.tools.hc)?;
