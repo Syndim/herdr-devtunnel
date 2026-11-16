@@ -10,7 +10,9 @@ use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::time::timeout;
 
-use super::{Role, background, command, executable, parse_session};
+use super::background;
+use super::config::{Role, executable, parse_session, parse_tunnel, shell_quote};
+use super::process::command;
 
 #[derive(Args)]
 pub struct Arguments {
@@ -141,7 +143,7 @@ fn unix_transport_words(target: &str) -> Option<Vec<String>> {
     }
     if words
         .iter()
-        .map(|s| super::shell_quote(s))
+        .map(|s| shell_quote(s))
         .collect::<Vec<_>>()
         .join(" ")
         != target
@@ -250,10 +252,7 @@ fn is_our_transport_words(words: &[String], current_exe: &Path) -> bool {
     } else {
         args
     };
-    if args.len() < 3
-        || args[..2] != ["connect", "--tunnel"]
-        || super::parse_tunnel(&args[2]).is_err()
-    {
+    if args.len() < 3 || args[..2] != ["connect", "--tunnel"] || parse_tunnel(&args[2]).is_err() {
         return false;
     }
     let mut seen = 0u8;
@@ -263,7 +262,7 @@ fn is_our_transport_words(words: &[String], current_exe: &Path) -> bool {
         }
         let (bit, valid) = match pair[0].as_str() {
             "--port" => (1, pair[1].parse::<u16>().is_ok_and(|n| n > 0)),
-            "--session" => (2, super::parse_session(&pair[1]).is_ok()),
+            "--session" => (2, parse_session(&pair[1]).is_ok()),
             "--timeout" => (
                 4,
                 pair[1].parse::<u64>().is_ok_and(|n| (1..=600).contains(&n)),
@@ -402,7 +401,7 @@ mod tests {
         let words = ["/tmp/it's here/hd", "connect", "--tunnel", "abc.use2"];
         let target = words
             .iter()
-            .map(|w| super::super::shell_quote(w))
+            .map(|w| super::shell_quote(w))
             .collect::<Vec<_>>()
             .join(" ");
         assert_eq!(unix_transport_words(&target).unwrap(), words);
@@ -663,12 +662,12 @@ mod tests {
                 let words = prefix.iter().copied().chain(args).collect::<Vec<_>>();
                 let unix = words
                     .iter()
-                    .map(|word| super::super::shell_quote(word))
+                    .map(|word| super::shell_quote(word))
                     .collect::<Vec<_>>()
                     .join(" ");
                 let windows = words
                     .iter()
-                    .map(|word| super::super::windows_quote(word))
+                    .map(|word| crate::herdr::config::windows_quote(word))
                     .collect::<Vec<_>>()
                     .join(" ");
                 #[cfg(not(windows))]

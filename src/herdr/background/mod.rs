@@ -8,7 +8,9 @@ use anyhow::{Context, Result, bail, ensure};
 use clap::Args;
 use serde::{Deserialize, Serialize};
 
-use super::{Connection, ServerArgs, combine_results, executable, parse_machine, serve};
+use super::config::{Connection, ServerArgs, executable, parse_machine};
+use super::process::combine_results;
+use super::server_runtime::serve;
 use crate::dt::{background as lifecycle, build_failure_matchers};
 
 #[derive(Args)]
