@@ -548,13 +548,10 @@ fn binary_help_identifies_hd() {
 }
 
 #[test]
-fn legacy_internal_commands_keep_their_runtime_guards_and_lifetime() {
+fn internal_commands_keep_their_runtime_guards_and_lifetime() {
     let fixture = Fixture::new();
-    for legacy in [false, true] {
+    {
         let mut worker = Command::new(&fixture.cli);
-        if legacy {
-            worker.arg("herdr");
-        }
         let output = worker
             .args(["server-worker", "--directory"])
             .arg(&fixture.root)
@@ -568,9 +565,6 @@ fn legacy_internal_commands_keep_their_runtime_guards_and_lifetime() {
         );
 
         let mut command = Command::new(&fixture.cli);
-        if legacy {
-            command.arg("herdr");
-        }
         command
             .args(["_tunnel", "host", "--tunnel", "fixture.use2", "--devtunnel"])
             .arg(&fixture.dt)
@@ -580,10 +574,7 @@ fn legacy_internal_commands_keep_their_runtime_guards_and_lifetime() {
             .env("USERPROFILE", &fixture.root)
             .stdin(Stdio::piped());
         let mut tunnel = Running::start(command);
-        let attempt = if legacy { 2 } else { 1 };
-        let path = fixture
-            .root
-            .join(format!("host-attempt-{attempt}/identity"));
+        let path = fixture.root.join("host-attempt-1/identity");
         let mut host_pid = None;
         wait_until(|| {
             host_pid = fs::read_to_string(&path).ok();
@@ -831,8 +822,8 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     for data in [
         b"GET / HTTP/1.1\r\n".to_vec(),
         b"{\"protocol\":\"wrong\",\"session\":\"work\"}\n".to_vec(),
-        b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"wrong\"}\n".to_vec(),
-        b"{\"protocol\":\"herdr-devtunnel/1\"}\n".to_vec(),
+        b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"wrong\"}\n".to_vec(),
+        b"{\"protocol\":\"syndim/herdr-devtunnel/v1\"}\n".to_vec(),
         vec![b'x'; 4097],
     ] {
         let mut socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
@@ -861,7 +852,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         .unwrap();
     socket.write_all(b"{\"protocol\":").unwrap();
     socket
-        .write_all(b"\"herdr-devtunnel/1\",\"session\":\"work\"}\n\0\xffpayload")
+        .write_all(b"\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\n\0\xffpayload")
         .unwrap();
     socket.shutdown(Shutdown::Write).unwrap();
     let mut response = Vec::new();
@@ -905,57 +896,6 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     );
     registration_process.wait_for_exit();
 
-    let legacy_args = [
-        exe.to_str().unwrap().to_string(),
-        "herdr".into(),
-        "connect".into(),
-        "--tunnel".into(),
-        "fixture.use2".into(),
-        "--port".into(),
-        fixture.port.to_string(),
-        "--session".into(),
-        "work".into(),
-        "--timeout".into(),
-        "30".into(),
-        "--devtunnel".into(),
-        fixture.dt.canonicalize().unwrap().to_str().unwrap().into(),
-    ];
-    #[cfg(not(windows))]
-    let legacy_via = legacy_args
-        .iter()
-        .map(|arg| format!("'{}'", arg.replace('\'', "'\\''")))
-        .collect::<Vec<_>>()
-        .join(" ");
-    #[cfg(windows)]
-    let legacy_via = legacy_args
-        .iter()
-        .map(|arg| format!("\"{arg}\""))
-        .collect::<Vec<_>>()
-        .join(" ");
-    let mut legacy_registration = Command::new(&fixture.hc);
-    legacy_registration
-        .args([
-            "machine",
-            "add",
-            "--name",
-            "legacy",
-            "--session",
-            "work",
-            "--via",
-        ])
-        .arg(&legacy_via)
-        .env("HERDR_TEST_FIXTURE_ROOT", &fixture.root)
-        .env("HERDR_TEST_FIXTURE_PORT", fixture.port.to_string())
-        .env("HOME", &fixture.root)
-        .env("USERPROFILE", &fixture.root)
-        .current_dir(&fixture.root)
-        .stdin(Stdio::null());
-    gate_connector(&mut legacy_registration, "legacy");
-    let legacy_registration = Running::start(legacy_registration);
-    let legacy_process = release_connector(&fixture, "legacy");
-    success(&legacy_registration.output());
-    legacy_process.wait_for_exit();
-
     let mut connector = fixture.connection_with_timeout("connect", "30");
     connector.arg(bootstrap()).stdin(Stdio::piped());
     gate_connector(&mut connector, "kill");
@@ -963,7 +903,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     let process = release_connector(&fixture, "kill");
     let mut probe = connector.child.stdin.take().unwrap();
     probe.write_all(b"probe").unwrap();
-    wait_until(|| hc_connections(&fixture).len() == 5);
+    wait_until(|| hc_connections(&fixture).len() == 4);
     assert!(
         process.is_alive(),
         "connector exited before parent was killed"
@@ -1594,7 +1534,7 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
         let mut socket = BufReader::new(socket);
         socket
             .get_mut()
-            .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\nprobe")
+            .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nprobe")
             .unwrap();
         let mut hello = String::new();
         socket.read_line(&mut hello).unwrap();
@@ -1631,7 +1571,9 @@ fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
     let mut socket = BufReader::new(socket);
     socket
         .get_mut()
-        .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\nreconnected")
+        .write_all(
+            b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nreconnected",
+        )
         .unwrap();
     let mut hello = String::new();
     socket.read_line(&mut hello).unwrap();
@@ -1665,18 +1607,9 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     let host_pid = fs::read_to_string(fixture.root.join("host-pid")).unwrap();
     let host_process = ProcessIdentity::capture(&host_pid);
     assert_eq!(fixture.state()["ready"], true);
-    let root_status = fixture.command("status").output().unwrap();
-    let legacy_status = Command::new(&fixture.cli)
-        .args(["herdr", "status"])
-        .env("HOME", &fixture.root)
-        .env("USERPROFILE", &fixture.root)
-        .current_dir(&fixture.root)
-        .output()
-        .unwrap();
-    success(&root_status);
-    success(&legacy_status);
-    assert_eq!(root_status.stdout, legacy_status.stdout);
-    assert!(String::from_utf8_lossy(&legacy_status.stdout).contains("ready=true"));
+    let status = fixture.command("status").output().unwrap();
+    success(&status);
+    assert!(String::from_utf8_lossy(&status.stdout).contains("ready=true"));
     assert!(worker_process.is_alive());
     assert!(host_process.is_alive());
     let socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
@@ -1686,7 +1619,7 @@ fn managed_stop_terminates_live_hc_and_incomplete_handshakes() {
     let mut socket = BufReader::new(socket);
     socket
         .get_mut()
-        .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\nprobe")
+        .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nprobe")
         .unwrap();
     let mut hello = String::new();
     socket.read_line(&mut hello).unwrap();
@@ -1767,11 +1700,11 @@ fn reconnect_machines(fixture: &Fixture, names: &[&str]) {
     #[cfg(not(windows))]
     let target = {
         let exe = fixture.cli.to_str().unwrap().replace('\'', "'\\''");
-        format!("'{exe}' 'herdr' 'connect' '--tunnel' 'fixture.use2'")
+        format!("'{exe}' 'connect' '--tunnel' 'fixture.use2'")
     };
     #[cfg(windows)]
     let target = format!(
-        "\"{}\" \"herdr\" \"connect\" \"--tunnel\" \"fixture.use2\"",
+        "\"{}\" \"connect\" \"--tunnel\" \"fixture.use2\"",
         fixture.cli.display()
     );
     let mut machines: Vec<_> = names
@@ -2066,7 +1999,7 @@ fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
         .set_read_timeout(Some(Duration::from_secs(10)))
         .unwrap();
     socket
-        .write_all(b"{\"protocol\":\"herdr-devtunnel/1\",\"session\":\"work\"}\n")
+        .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\n")
         .unwrap();
     let mut socket = BufReader::new(socket);
     let mut hello = String::new();

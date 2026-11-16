@@ -1,4 +1,5 @@
 mod caller;
+pub(crate) mod copilot_status;
 mod integrate;
 
 use anyhow::Result;
@@ -26,7 +27,7 @@ pub(super) enum Provider {
 #[derive(Args)]
 struct StatusArguments {
     #[command(flatten)]
-    hook: super::copilot_status::Arguments,
+    hook: copilot_status::Arguments,
     /// Override caller detection (for wrappers or manual invocation).
     #[arg(long, value_enum)]
     provider: Option<Provider>,

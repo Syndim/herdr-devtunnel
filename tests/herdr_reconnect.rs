@@ -212,26 +212,9 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         .map(|request| request["params"]["machine"].as_str().unwrap().to_string())
         .collect();
     let expected = if cfg!(unix) {
-        vec![
-            "root",
-            "legacy",
-            "complete",
-            "legacy-complete",
-            "normalized",
-            "legacy-normalized",
-            "symlink",
-            "legacy-symlink",
-        ]
+        vec!["root", "complete", "normalized", "symlink"]
     } else {
-        vec![
-            "root",
-            "legacy",
-            "complete",
-            "legacy-complete",
-            "normalized",
-            "legacy-normalized",
-            "escaped",
-        ]
+        vec!["root", "complete", "normalized"]
     };
     assert_eq!(connected, expected);
     let expected_calls = expected.len() + 1;

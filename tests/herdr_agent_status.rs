@@ -38,7 +38,7 @@ fn hook_event(event: &str, input: &str, in_herdr: bool) -> Output {
 
 fn run_hook(event: &str, input: &str, in_herdr: bool, legacy: bool) -> Output {
     if legacy {
-        run_command(&["herdr", "copilot-status", event], input, in_herdr)
+        run_command(&["copilot-status", event], input, in_herdr)
     } else {
         run_command(
             &["agent", "status", event, "--provider", "copilot"],
@@ -156,7 +156,7 @@ fn foreground_stop_does_not_open_or_write_a_terminal() {
 }
 
 #[test]
-fn legacy_copilot_status_hook_remains_compatible() {
+fn copilot_status_hook_remains_compatible() {
     let output = run_hook("agentStop", "not JSON", false, true);
     assert!(output.status.success(), "{output:?}");
     assert!(output.stdout.is_empty());
