@@ -8,10 +8,12 @@ use tokio::io::AsyncRead;
 use tokio::process::{Child, ChildStdin};
 use tokio::time::timeout;
 
-use crate::config::{Connection, TunnelArgs, executable};
 use crate::devtunnel::policy::{tunnel_id, validate_private_tunnel};
-use crate::herdr::protocol::read_line;
-use crate::process::{command, lookup_tunnel, output};
+use crate::herdr::config::{Connection, TunnelArgs};
+use crate::herdr::server::protocol::read_line;
+use crate::herdr::validation::executable;
+use crate::process::command::{command, lookup_tunnel, output};
+use crate::process::shutdown::shutdown_signal;
 pub(crate) struct Tunnel {
     pub(crate) child: Child,
     lifetime: Option<ChildStdin>,
@@ -105,21 +107,6 @@ pub(crate) async fn tunnel_worker(args: TunnelArgs) -> Result<()> {
             child.wait().await?;
         }
     }
-    Ok(())
-}
-
-pub(crate) async fn shutdown_signal() -> Result<()> {
-    #[cfg(unix)]
-    {
-        let mut terminate =
-            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-        tokio::select! {
-            result = tokio::signal::ctrl_c() => result?,
-            _ = terminate.recv() => {}
-        }
-    }
-    #[cfg(not(unix))]
-    tokio::signal::ctrl_c().await?;
     Ok(())
 }
 

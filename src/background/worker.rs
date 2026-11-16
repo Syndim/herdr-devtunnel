@@ -2,13 +2,13 @@ use std::fs;
 
 use anyhow::{Context, Result, ensure};
 
-use crate::config::ServerArgs;
+use crate::herdr::config::ServerArgs;
 use crate::herdr::server::serve;
 use crate::process::combine_results;
 
 use super::WorkerArgs;
 use super::lifecycle;
-use super::state::Reporter;
+use super::reporter::Reporter;
 
 pub(crate) async fn worker(args: WorkerArgs) -> Result<()> {
     let executable = std::env::current_exe()?.canonicalize()?;

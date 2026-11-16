@@ -10,12 +10,15 @@ use tokio::sync::{Semaphore, watch};
 use tokio::task::JoinSet;
 use tokio::time::timeout;
 
-use super::background::Reporter;
-use crate::config::{ConnectArgs, Connection, ServerArgs, executable};
-use crate::devtunnel::tunnel::{Tunnel, prepare_tunnel, shutdown_signal};
-use crate::herdr::protocol::{MAGIC, bridge, read_hello, validate_bootstrap, write_hello};
+use super::bridge::bridge;
+use super::protocol::{MAGIC, read_hello, validate_bootstrap, write_hello};
+use crate::background::Reporter;
+use crate::devtunnel::process::{Tunnel, prepare_tunnel};
+use crate::herdr::config::{ConnectArgs, Connection, ServerArgs};
+use crate::herdr::validation::executable;
 use crate::process::combine_results;
-pub(super) async fn serve(args: ServerArgs, reporter: &Reporter) -> Result<()> {
+use crate::process::shutdown::shutdown_signal;
+pub(crate) async fn serve(args: ServerArgs, reporter: &Reporter) -> Result<()> {
     let matchers = crate::devtunnel::build_failure_matchers(&args.patterns)?;
     let mut c = args.connection.clone();
     let hc = executable(&c.tools.hc)?;
@@ -213,7 +216,7 @@ async fn watch_host(
     }
 }
 
-pub(super) fn forwarding_port(line: &str, remote: u16) -> Option<u16> {
+pub(crate) fn forwarding_port(line: &str, remote: u16) -> Option<u16> {
     let captures = Regex::new(r"Forwarding from 127\.0\.0\.1:(\d+) to host port (\d+)\.")
         .ok()?
         .captures(line)?;
@@ -223,7 +226,7 @@ pub(super) fn forwarding_port(line: &str, remote: u16) -> Option<u16> {
     captures[1].parse::<u16>().ok().filter(|p| *p != 0)
 }
 
-pub(super) async fn connect(args: ConnectArgs) -> Result<()> {
+pub(crate) async fn connect(args: ConnectArgs) -> Result<()> {
     let c = args.connection;
     validate_bootstrap(&args.bootstrap, &c.session)?;
     let mut tunnel = Tunnel::start(&c, "connect")?;

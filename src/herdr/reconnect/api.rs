@@ -8,7 +8,7 @@ use tokio::process::{Child, ChildStdin, ChildStdout};
 use tokio::time::timeout;
 
 use super::Arguments;
-use crate::config::executable;
+use crate::herdr::validation::executable;
 use crate::process::command;
 
 pub(super) async fn call_local(args: &Arguments, method: &str, params: Value) -> Result<Value> {

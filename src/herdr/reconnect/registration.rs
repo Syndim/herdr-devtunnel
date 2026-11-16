@@ -1,6 +1,70 @@
+use super::{Arguments, api};
+use anyhow::{Context, Result, ensure};
+use serde::Deserialize;
+use serde_json::json;
+
+#[derive(Deserialize)]
+struct Machine {
+    name: String,
+    target: String,
+    #[serde(default)]
+    via: bool,
+}
+
+#[derive(Deserialize)]
+struct Machines {
+    machines: Vec<Machine>,
+}
+
+pub(super) async fn reconnect_clients(args: &Arguments) -> Result<()> {
+    let machines: Machines =
+        serde_json::from_value(api::call_local(args, "machine.list", json!({})).await?)
+            .context("Invalid hc machine list")?;
+    let current_exe = std::env::current_exe().context("Cannot identify reconnect executable")?;
+    let mut count = 0;
+    let mut failures = Vec::new();
+    for machine in machines.machines {
+        if !machine.via || !is_our_transport(&machine.target, &current_exe) {
+            continue;
+        }
+        count += 1;
+        let result = async {
+            let result =
+                api::call_local(args, "machine.connect", json!({"machine": machine.name})).await?;
+            let state = result["state"]
+                .as_str()
+                .context("hc machine.connect returned no state")?;
+            ensure!(
+                state == "connected",
+                "state={state}; {}",
+                result["why"].as_str().unwrap_or("connection is not ready")
+            );
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        match result {
+            Ok(()) => println!("Machine '{}' is connected.", machine.name),
+            Err(error) => {
+                eprintln!("[herdr] Machine '{}': {error:#}", machine.name);
+                failures.push(format!("{}: {error:#}", machine.name));
+            }
+        }
+    }
+    if count == 0 {
+        println!("No registered Herdr dev-tunnel machines found.");
+    }
+    ensure!(
+        failures.is_empty(),
+        "Failed to reconnect {} machine(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    Ok(())
+}
+
 use std::path::Path;
 
-use crate::config::{parse_session, parse_tunnel, shell_quote};
+use crate::herdr::validation::{parse_session, parse_tunnel, shell_quote};
 
 #[cfg(any(not(windows), test))]
 fn unix_transport_words(target: &str) -> Option<Vec<String>> {
@@ -445,7 +509,7 @@ mod tests {
                     .join(" ");
                 let windows = words
                     .iter()
-                    .map(|word| crate::config::windows_quote(word))
+                    .map(|word| crate::herdr::validation::windows_quote(word))
                     .collect::<Vec<_>>()
                     .join(" ");
                 #[cfg(not(windows))]

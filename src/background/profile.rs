@@ -6,8 +6,9 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 
-use crate::config::{ServerArgs, executable, parse_machine};
 use crate::devtunnel::build_failure_matchers;
+use crate::herdr::config::ServerArgs;
+use crate::herdr::validation::{executable, parse_machine};
 
 use super::SessionArgs;
 use super::lifecycle;

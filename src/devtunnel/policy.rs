@@ -4,7 +4,7 @@ use anyhow::{Context, Result, bail, ensure};
 use serde::Deserialize;
 use serde_json::Value;
 
-use crate::config::Connection;
+use crate::herdr::config::Connection;
 use crate::process::output;
 fn tunnel_value(value: &Value) -> &Value {
     value.get("tunnel").unwrap_or(value)

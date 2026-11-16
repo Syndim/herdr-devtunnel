@@ -7,7 +7,7 @@ use serde_json::Value;
 use tokio::process::Command;
 use tokio::time::timeout;
 
-pub(super) fn command(path: impl AsRef<std::ffi::OsStr>) -> Command {
+pub(crate) fn command(path: impl AsRef<std::ffi::OsStr>) -> Command {
     let mut command = Command::new(path);
     command.kill_on_drop(true);
     #[cfg(windows)]
@@ -15,7 +15,7 @@ pub(super) fn command(path: impl AsRef<std::ffi::OsStr>) -> Command {
     command
 }
 
-pub(super) async fn run_output(
+pub(crate) async fn run_output(
     path: &PathBuf,
     args: &[&str],
     seconds: u64,
@@ -29,7 +29,7 @@ pub(super) async fn run_output(
     .with_context(|| format!("Failed to run {}", path.display()))
 }
 
-pub(super) fn checked_output(
+pub(crate) fn checked_output(
     path: &Path,
     args: &[&str],
     result: std::process::Output,
@@ -46,11 +46,11 @@ pub(super) fn checked_output(
     String::from_utf8(result.stdout).context("CLI returned non-UTF-8 output")
 }
 
-pub(super) async fn output(path: &PathBuf, args: &[&str], seconds: u64) -> Result<String> {
+pub(crate) async fn output(path: &PathBuf, args: &[&str], seconds: u64) -> Result<String> {
     checked_output(path, args, run_output(path, args, seconds).await?)
 }
 
-pub(super) async fn lookup_tunnel(
+pub(crate) async fn lookup_tunnel(
     path: &PathBuf,
     tunnel: &str,
     seconds: u64,
@@ -64,11 +64,4 @@ pub(super) async fn lookup_tunnel(
     Ok(Some(
         serde_json::from_str(&detail).context("Invalid tunnel details")?,
     ))
-}
-pub(super) fn combine_results(first: Result<()>, second: Result<()>) -> Result<()> {
-    match (first, second) {
-        (Err(first), Err(second)) => Err(first.context(format!("Additional error: {second:#}"))),
-        (Err(error), _) | (_, Err(error)) => Err(error),
-        (Ok(()), Ok(())) => Ok(()),
-    }
 }

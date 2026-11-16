@@ -1,7 +1,6 @@
 mod caller;
 pub(crate) mod copilot_status;
 mod integrate;
-mod terminal_status;
 
 use anyhow::Result;
 use clap::{Args, Subcommand, ValueEnum};
