@@ -1,3 +1,4 @@
+mod agent;
 mod background;
 mod copilot_status;
 mod reconnect;
@@ -36,7 +37,10 @@ pub struct Arguments {
 
 #[derive(Subcommand)]
 pub enum Commands {
-    /// Report a Copilot lifecycle hook to the current Herdr terminal.
+    /// Install agent integrations and report lifecycle status to Herdr.
+    Agent(agent::Arguments),
+    /// Legacy Copilot hook entry point; use `agent status` instead.
+    #[command(hide = true)]
     CopilotStatus(copilot_status::Arguments),
     /// Check prerequisites and print server/client setup instructions.
     Setup(SetupArgs),
@@ -163,13 +167,15 @@ pub struct TunnelArgs {
 
 impl Commands {
     pub(crate) fn run(self) -> Result<()> {
-        if let Self::CopilotStatus(args) = self {
-            return args.run();
-        }
+        let command = match self {
+            Self::Agent(args) => return args.run(),
+            Self::CopilotStatus(args) => return args.run(),
+            command => command,
+        };
         let runtime = tokio::runtime::Runtime::new()?;
         let result = runtime.block_on(async {
-            match self {
-                Self::CopilotStatus(args) => args.run(),
+            match command {
+                Self::Agent(_) | Self::CopilotStatus(_) => unreachable!(),
                 Self::Doctor(args) => doctor(args).await,
                 Self::Setup(args) => setup(args).await,
                 Self::Server(args) if args.foreground => {

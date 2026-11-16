@@ -99,7 +99,17 @@ In particular, reconnect cannot repair a registration whose executable has been 
 
 ## Agent status
 
-Agent status integration is optional and is not required for the tunnel. `hd copilot-status EVENT` reports Copilot lifecycle events to Herdr's Agents panel when invoked by a configured hook. Outside a Herdr terminal it does nothing; inside one it reads a JSON object from stdin and writes the status to the controlling terminal. `permissionRequest` and `agentStop` do not report completion or a human prompt. A root `sessionIdle` event reports completion, or idle if aborted; without a separately configured hook or extension that supplies this root event, completion is not reported by this integration. Hooks and extensions are not installed or configured by this project; use `--help` for supported events.
+Agent status integration is optional and is not required for the tunnel. Install user-level Copilot CLI hooks with:
+
+```sh
+hd agent integrate --provider copilot
+```
+
+This creates `~/.copilot/hooks/herdr-devtunnel.json` on macOS/Linux or `%USERPROFILE%\.copilot\hooks\herdr-devtunnel.json` on Windows. If `COPILOT_HOME` is set and nonempty, it uses `$COPILOT_HOME/hooks/herdr-devtunnel.json` instead. The installer leaves other hook files and settings untouched. Repeating the command with the same executable path and configuration is safe; it refuses to overwrite a different existing file. Restart Copilot to load the hooks. The generated configuration uses Copilot CLI's direct `exec`/`args` hook format and pins the absolute path of `hd`, without shell quoting. If you move `hd`, review and remove this hook file, then reinstall. To uninstall, delete only this file. Remove any older manually configured status hooks to avoid duplicate reports. See the [Copilot hooks reference](https://docs.github.com/en/copilot/reference/hooks-configuration) for configuration support in your installed CLI.
+
+The hooks invoke `hd agent status EVENT`, which detects the provider by walking the calling process's ancestors, including through shell wrappers. Currently only Copilot is supported, including native executables and Node-based installations. Unknown callers and invocations outside a Herdr terminal are silent no-ops and do not read stdin. Wrappers that hide the Copilot process can pass `--provider copilot` explicitly. For a recognized provider inside Herdr, the command reads a JSON object from stdin and writes the status to the controlling terminal, not stdout. `hd copilot-status EVENT` remains a hidden compatibility entry point that explicitly selects Copilot; existing `hd herdr copilot-status EVENT` hooks also continue to work. Tunnel server status remains `hd status`.
+
+Subagent events are ignored so they cannot overwrite root-agent status. `permissionRequest` and `agentStop` do not report completion or a human prompt. A root `sessionIdle` event reports completion, or idle if aborted, but it is an extension event, not a configurable Copilot CLI hook, so the installer does not register it. Without a separately configured extension that supplies this root event, completion is not reported by this integration. Use `hd agent status --help` for supported events.
 
 ## Reconnect
 
