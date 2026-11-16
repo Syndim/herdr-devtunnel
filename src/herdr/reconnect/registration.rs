@@ -64,7 +64,9 @@ pub(super) async fn reconnect_clients(args: &Arguments) -> Result<()> {
 
 use std::path::Path;
 
-use crate::herdr::validation::{parse_session, parse_tunnel, shell_quote};
+#[cfg(any(not(windows), test))]
+use crate::herdr::validation::shell_quote;
+use crate::herdr::validation::{parse_session, parse_tunnel};
 
 #[cfg(any(not(windows), test))]
 fn unix_transport_words(target: &str) -> Option<Vec<String>> {
