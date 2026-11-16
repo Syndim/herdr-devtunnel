@@ -12,7 +12,6 @@ use std::{
 struct Fixture {
     root: PathBuf,
     tool: PathBuf,
-    port: u16,
 }
 
 impl Fixture {
@@ -57,30 +56,36 @@ esac
         )
         .unwrap();
         fs::set_permissions(&tool, fs::Permissions::from_mode(0o700)).unwrap();
-        let port = TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap()
-            .port();
-        Self { root, tool, port }
+        Self { root, tool }
     }
 
     fn run(&self, tunnel: &str, code: i32, stdout: &str, stderr: &str) -> Output {
-        Command::new(env!("CARGO_BIN_EXE_hd"))
-            .args(["server", "--foreground", "--tunnel", tunnel, "--port"])
-            .arg(self.port.to_string())
-            .args(["--timeout", "5", "--hc"])
-            .arg(&self.tool)
-            .arg("--devtunnel")
-            .arg(&self.tool)
-            .env("HOME", &self.root)
-            .env("USERPROFILE", &self.root)
-            .env("LOOKUP_ROOT", &self.root)
-            .env("LOOKUP_CODE", code.to_string())
-            .env("LOOKUP_STDOUT", stdout)
-            .env("LOOKUP_STDERR", stderr)
-            .output()
-            .unwrap()
+        for _ in 0..10 {
+            let port = TcpListener::bind("127.0.0.1:0")
+                .unwrap()
+                .local_addr()
+                .unwrap()
+                .port();
+            let output = Command::new(env!("CARGO_BIN_EXE_hd"))
+                .args(["server", "--foreground", "--tunnel", tunnel, "--port"])
+                .arg(port.to_string())
+                .args(["--timeout", "5", "--hc"])
+                .arg(&self.tool)
+                .arg("--devtunnel")
+                .arg(&self.tool)
+                .env("HOME", &self.root)
+                .env("USERPROFILE", &self.root)
+                .env("LOOKUP_ROOT", &self.root)
+                .env("LOOKUP_CODE", code.to_string())
+                .env("LOOKUP_STDOUT", stdout)
+                .env("LOOKUP_STDERR", stderr)
+                .output()
+                .unwrap();
+            if self.root.join("commands").exists() {
+                return output;
+            }
+        }
+        panic!("server failed to invoke the fixture devtunnel after 10 attempts");
     }
 
     fn commands(&self) -> String {
