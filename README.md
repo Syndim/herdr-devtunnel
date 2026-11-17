@@ -30,28 +30,28 @@ Run the server and client setup commands on their respective machines. `--role` 
 Run the server as the ordinary user who owns the projects and agent credentials:
 
 ```sh
-hd server --tunnel agent-host
+hd server start --tunnel agent-host
 ```
 
 Wait for successful startup and the `CLIENT COMMAND` line; use the full tunnel identifier printed there on the client. A bare name uses automatic relay selection; a name with a cluster suffix, such as `agent-host.inc1`, requests that relay when creating the tunnel. Existing tunnels are not relocated, and a mismatched relay is rejected.
 
 The server looks up the named tunnel and creates it only on a confirmed not-found response. It reuses an eligible private tunnel and adds the port if it is empty; incompatible ports or access grants are rejected. The default bridge port is `43821` and the remote `hc` session is `default`. Override them with `--port 43822 --session work`, and use the same values on the client. Use a dedicated tunnel, port, and server process for each published session.
 
-By default the server is a managed background process. `serve` is an alias for `server`. Manage profiles independently:
+By default the server is a managed background process. Managed server commands are grouped under `server`. Manage profiles independently:
 
 ```sh
 hd status
-hd stop
-hd server --name workbox --tunnel agent-host
+hd server stop
+hd server start --name workbox --tunnel agent-host
 hd status --name workbox
-hd stop --name workbox
+hd server stop --name workbox
 ```
 
 The default profile is `default`. Starting a compatible running profile leaves it unchanged; stop it before changing settings. State, configuration, and `server.log` belong under `~/.herdr-devtunnel/server-PROFILE`. On Unix, `HOME` must be owned by the current user and must not be group or world writable; its ancestors are checked for trusted ownership and permissions, and symlinks along the path for trusted ownership. The runtime directory must be owned by the current user and have mode `0700`; new profile directories are created with mode `0700` subject to the umask, but existing profile directory permissions are not tightened or checked for `0700`. On Windows the runtime directory is under `%USERPROFILE%\.herdr-devtunnel`; the program neither enforces nor validates private Windows ACLs. Restrict the directory's inherited and explicit ACLs, as well as those on its contents, to the intended user and necessary trusted system principals, especially on shared machines. A managed server copies the running executable to a snapshot in this directory, so stop and start the profile to load updated code. Do not modify the source executable in place while starting or reconnecting: the snapshot copy is not atomic with such updates. No service or login autostart is configured.
 
 The guard retries the Dev Tunnels host after exits, known failures, or readiness timeouts, rechecking tunnel policy before retrying. It does not restart `hc` or agents. `--cooldown 2` sets the delay in seconds; `--max-restarts 0` means unlimited retries; repeatable `--pattern REGEX` adds case-insensitive failure patterns. `--timeout` bounds setup calls and host readiness. The managed startup readiness timer accounts for setup, host readiness, retry cleanup, and cooldown, and starts after the worker is spawned; earlier work, including copying the executable snapshot, is not covered by it, so it is not a bound on total startup time. If managed startup times out, it requests shutdown but does not wait to confirm that the worker has stopped; check `status` and the log before retrying. Cleanup after an interrupted startup has not been verified. Server `status` reports whether the managed worker is running, its readiness and restart count, and the last status when stopped; it does not establish client connectivity or agent health.
 
-For attached troubleshooting, use `hd server --foreground --tunnel agent-host` and stop it with Ctrl+C. Foreground servers are not controlled by `status` or `stop`. Stopping a server closes bridge connections and the tunnel host, but does not intentionally stop the persistent `hc` core or agent terminals and does not delete the tunnel.
+For attached troubleshooting, use `hd server start --foreground --tunnel agent-host` and stop it with Ctrl+C. Foreground servers are not controlled by `status` or `stop`. Stopping a server closes bridge connections and the tunnel host, but does not intentionally stop the persistent `hc` core or agent terminals and does not delete the tunnel.
 
 ## Client
 
@@ -69,7 +69,7 @@ For example, with different local and remote sessions (POSIX shell; replace the 
 
 ```sh
 # On the server:
-hd server --tunnel example-tunnel --session remote-work
+hd server start --tunnel example-tunnel --session remote-work
 
 # On the client, assuming the server printed example-tunnel.inc1:
 hd client --name remote-box --tunnel example-tunnel.inc1 --session remote-work --local-session local-desktop

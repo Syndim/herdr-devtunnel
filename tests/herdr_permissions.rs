@@ -122,7 +122,7 @@ fn refuses_permissive_managed_directories_without_changing_them() {
     mkdir(&profile, 0o700);
     for args in [
         &["status"][..],
-        &["stop"][..],
+        &["server", "stop"][..],
         &["reconnect", "--all", "--role", "server"][..],
     ] {
         assert_failure(home.command(args), "must have permissions 0700");
@@ -334,7 +334,7 @@ fn rejects_writable_home_without_modifying_it() {
     for permissions in [0o720, 0o702, 0o775, 0o777, 0o1777] {
         let home = Home::new();
         fs::set_permissions(&home.0, fs::Permissions::from_mode(permissions)).unwrap();
-        for args in [&["status"][..], &["stop"][..]] {
+        for args in [&["status"][..], &["server", "stop"][..]] {
             assert_failure(home.command(args), "group or world writable");
         }
         assert_eq!(mode(&home.0), permissions);

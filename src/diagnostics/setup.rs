@@ -18,10 +18,10 @@ pub(crate) async fn setup(args: SetupArgs) -> Result<()> {
     if !json {
         println!("Use the SAME Dev Tunnels account and identity provider on both machines.");
         if role != Role::Client {
-            println!("Server: hd server --tunnel UNIQUE-NAME");
+            println!("Server: hd server start --tunnel UNIQUE-NAME");
             println!("The server creates a missing tunnel/port or reuses a valid private tunnel.");
             println!("It runs in the background and returns only after tunnel readiness.");
-            println!("Manage: hd status; hd stop (add --name PROFILE for named servers).");
+            println!("Manage: hd status; hd server stop (add --name PROFILE for named servers).");
         }
         if role != Role::Server {
             println!("Client: hd client --name remote --tunnel NAME.CLUSTER");
