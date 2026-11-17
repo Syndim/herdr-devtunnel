@@ -27,13 +27,13 @@ pub(crate) enum Commands {
     Setup(SetupArgs),
     /// Check hc capabilities, devtunnel login, and the local shell requirement.
     Doctor(DoctorArgs),
-    /// Create or reuse a private tunnel and start a guarded background bridge.
-    #[command(alias = "serve")]
-    Server(ServerArgs),
+    /// Manage guarded server bridges.
+    Server {
+        #[command(subcommand)]
+        command: ServerCommands,
+    },
     /// Show whether a managed server is running and its tunnel is ready.
     Status(crate::background::SessionArgs),
-    /// Stop only the named managed bridge and its tunnel host, not hc/agents.
-    Stop(crate::background::SessionArgs),
     /// Reconnect managed servers and registered private-tunnel machines.
     #[command(alias = "r")]
     Reconnect(crate::herdr::reconnect::Arguments),
@@ -46,6 +46,14 @@ pub(crate) enum Commands {
     Tunnel(TunnelArgs),
     #[command(hide = true)]
     ServerWorker(crate::background::WorkerArgs),
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ServerCommands {
+    /// Create or reuse a private tunnel and start a guarded bridge.
+    Start(ServerArgs),
+    /// Stop only the named managed bridge and its tunnel host, not hc/agents.
+    Stop(crate::background::SessionArgs),
 }
 
 impl Commands {
@@ -61,13 +69,19 @@ impl Commands {
                 Self::Agent(_) | Self::CopilotStatus(_) => unreachable!(),
                 Self::Doctor(args) => crate::diagnostics::doctor(args).await,
                 Self::Setup(args) => crate::diagnostics::setup(args).await,
-                Self::Server(args) if args.foreground => {
+                Self::Server {
+                    command: ServerCommands::Start(args),
+                } if args.foreground => {
                     crate::herdr::server::serve(args, &crate::background::Reporter::foreground())
                         .await
                 }
-                Self::Server(args) => crate::background::start(args),
+                Self::Server {
+                    command: ServerCommands::Start(args),
+                } => crate::background::start(args),
+                Self::Server {
+                    command: ServerCommands::Stop(args),
+                } => crate::background::stop(args),
                 Self::Status(args) => crate::background::status(args),
-                Self::Stop(args) => crate::background::stop(args),
                 Self::Reconnect(args) => crate::herdr::reconnect::run(args).await,
                 Self::Client(args) => crate::herdr::client::add(args).await,
                 Self::Connect(args) => crate::herdr::server::connect(args).await,

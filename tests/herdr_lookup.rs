@@ -67,7 +67,14 @@ esac
                 .unwrap()
                 .port();
             let output = Command::new(env!("CARGO_BIN_EXE_hd"))
-                .args(["server", "--foreground", "--tunnel", tunnel, "--port"])
+                .args([
+                    "server",
+                    "start",
+                    "--foreground",
+                    "--tunnel",
+                    tunnel,
+                    "--port",
+                ])
                 .arg(port.to_string())
                 .args(["--timeout", "5", "--hc"])
                 .arg(&self.tool)

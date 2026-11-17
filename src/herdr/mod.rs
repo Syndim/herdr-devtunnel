@@ -158,12 +158,15 @@ mod tests {
     #[test]
     fn cli_requires_explicit_target_and_valid_identifiers() {
         for args in [
-            vec!["hd", "server"],
+            vec!["hd", "server", "start"],
             vec!["hd", "client", "--tunnel", "box.use2"],
-            vec!["hd", "server", "--tunnel", "box.use2", "--port", "0"],
+            vec![
+                "hd", "server", "start", "--tunnel", "box.use2", "--port", "0",
+            ],
             vec![
                 "hd",
                 "server",
+                "start",
                 "--tunnel",
                 "box.use2",
                 "--session",
@@ -189,14 +192,23 @@ mod tests {
                 "--local-session",
                 "two",
             ],
-            vec!["hd", "server", "--tunnel", "box.use2", "--allow-anonymous"],
-            vec!["hd", "server", "--tunnel", "box.use2", "--create"],
+            vec![
+                "hd",
+                "server",
+                "start",
+                "--tunnel",
+                "box.use2",
+                "--allow-anonymous",
+            ],
+            vec!["hd", "server", "start", "--tunnel", "box.use2", "--create"],
         ] {
             assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
         }
-        Cli::try_parse_from(["hd", "serve", "--tunnel", "box.use2"]).unwrap();
+        Cli::try_parse_from(["hd", "server", "start", "--tunnel", "box.use2"]).unwrap();
         Cli::try_parse_from(["hd", "add", "--name", "box", "--tunnel", "box.use2"]).unwrap();
         Cli::try_parse_from(["hd", "r", "--all"]).unwrap();
+        assert!(Cli::try_parse_from(["hd", "stop"]).is_err());
+        assert!(Cli::try_parse_from(["hd", "serve", "--tunnel", "box.use2"]).is_err());
         assert!(Cli::try_parse_from(["hd", "herdr", "serve", "--tunnel", "box.use2"]).is_err());
         assert!(
             Cli::try_parse_from([

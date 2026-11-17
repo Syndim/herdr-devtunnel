@@ -67,7 +67,11 @@ impl Fixture {
 
     fn command_with_devtunnel(&self, subcommand: &str, devtunnel: &Path) -> Command {
         let mut command = Command::new(&self.cli);
-        command.arg(subcommand);
+        match subcommand {
+            "server" => command.args(["server", "start"]),
+            "stop" => command.args(["server", "stop"]),
+            _ => command.arg(subcommand),
+        };
         if !matches!(subcommand, "status" | "stop" | "reconnect" | "r") {
             command
                 .arg("--hc")
@@ -529,13 +533,20 @@ fn binary_help_identifies_hd() {
         "doctor",
         "server",
         "status",
-        "stop",
         "reconnect",
         "client",
         "agent",
     ] {
         assert!(commands.contains(&name), "missing {name}: {stdout}");
     }
+    let server_help = Command::new(env!("CARGO_BIN_EXE_hd"))
+        .args(["server", "--help"])
+        .output()
+        .unwrap();
+    success(&server_help);
+    let server_help = String::from_utf8_lossy(&server_help.stdout);
+    assert!(server_help.contains("start"), "{server_help}");
+    assert!(server_help.contains("stop"), "{server_help}");
     for name in [
         "herdr",
         "connect",
@@ -593,18 +604,32 @@ fn cli_rejects_unsafe_identifiers_and_options_before_spawning_tools() {
     let invalid: &[&[&str]] = &[
         &["server"],
         &["client", "--tunnel", "fixture.use2"],
-        &["server", "--tunnel", "fixture.use2", "--port", "0"],
+        &["server", "start", "--tunnel", "fixture.use2", "--port", "0"],
         &[
             "server",
+            "start",
             "--tunnel",
             "fixture.use2",
             "--session",
             "../other",
         ],
-        &["server", "--tunnel", "fixture.use2", "--name", "../other"],
-        &["server", "--tunnel", "fixture.use2", "--allow-anonymous"],
-        &["server", "--tunnel", "fixture.use2", "--create"],
-        &["stop", "--name", "../other"],
+        &[
+            "server",
+            "start",
+            "--tunnel",
+            "fixture.use2",
+            "--name",
+            "../other",
+        ],
+        &[
+            "server",
+            "start",
+            "--tunnel",
+            "fixture.use2",
+            "--allow-anonymous",
+        ],
+        &["server", "start", "--tunnel", "fixture.use2", "--create"],
+        &["server", "stop", "--name", "../other"],
     ];
     for args in invalid {
         let output = Command::new(&fixture.cli)
@@ -771,7 +796,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     success(&setup);
     let setup_output = String::from_utf8_lossy(&setup.stdout);
     assert!(
-        setup_output.contains("Server: hd server --tunnel UNIQUE-NAME"),
+        setup_output.contains("Server: hd server start --tunnel UNIQUE-NAME"),
         "{setup_output}"
     );
     assert!(
@@ -2170,7 +2195,7 @@ fn matching_server_fails_during_startup_and_recovery_then_succeeds_when_ready() 
     let stderr = String::from_utf8_lossy(&retry.stderr);
     assert!(stderr.contains("not ready"), "{stderr}");
     assert!(stderr.contains("status --name default"), "{stderr}");
-    assert!(stderr.contains("retry `server`"), "{stderr}");
+    assert!(stderr.contains("retry `server start`"), "{stderr}");
     assert!(!String::from_utf8_lossy(&retry.stdout).contains("already running"));
     assert_eq!(fixture.state()["pid"].as_u64(), Some(worker_pid));
     assert_eq!(fixture.state()["ready"], false);
