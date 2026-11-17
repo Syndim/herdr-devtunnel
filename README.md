@@ -58,12 +58,12 @@ For attached troubleshooting, use `hd server start --foreground --tunnel agent-h
 Once the server is ready, run on the client, substituting the identifier and settings printed by the server:
 
 ```sh
-hd client --name workbox --tunnel agent-host.inc1
+hd client connect --name workbox --tunnel agent-host.inc1
 hc machine ls
 hc exec --on workbox whoami
 ```
 
-`add` is an alias for `client`. Client `--session` selects the **remote** session (default `default`); it must match the server's `--session`. Client `--local-session` instead selects the local core for registration: only for `hc machine add`, it sets `HC_SESSION` to the supplied value and removes inherited `HC_SOCKET`. It does not alter the remote session, the saved transport, or the environment of subsequent commands. Without `--local-session`, `hc machine add` inherits both variables unchanged. A socket configured in `hc` may still override session selection; check its configuration if the wrong core is used. Use Herdr App and subsequent `hc` commands with the same local core; do not use the App's SSH setup, SSH Login, or Update Core actions for this connection. Maintain the remote core directly. Do not connect a core to itself or create connection cycles.
+`add` is an alias for `connect` within the `client` command. Client `--session` selects the **remote** session (default `default`); it must match the server's `--session`. Client `--local-session` instead selects the local core for registration: only for `hc machine add`, it sets `HC_SESSION` to the supplied value and removes inherited `HC_SOCKET`. It does not alter the remote session, the saved transport, or the environment of subsequent commands. Without `--local-session`, `hc machine add` inherits both variables unchanged. A socket configured in `hc` may still override session selection; check its configuration if the wrong core is used. Use Herdr App and subsequent `hc` commands with the same local core; do not use the App's SSH setup, SSH Login, or Update Core actions for this connection. Maintain the remote core directly. Do not connect a core to itself or create connection cycles.
 
 For example, with different local and remote sessions (POSIX shell; replace the example tunnel identifier with the full one printed by the server):
 
@@ -72,7 +72,7 @@ For example, with different local and remote sessions (POSIX shell; replace the 
 hd server start --tunnel example-tunnel --session remote-work
 
 # On the client, assuming the server printed example-tunnel.inc1:
-hd client --name remote-box --tunnel example-tunnel.inc1 --session remote-work --local-session local-desktop
+hd client connect --name remote-box --tunnel example-tunnel.inc1 --session remote-work --local-session local-desktop
 
 # Select the same local core for subsequent hc commands:
 (
@@ -80,7 +80,7 @@ hd client --name remote-box --tunnel example-tunnel.inc1 --session remote-work -
   export HC_SESSION=local-desktop
   hc machine ls
 )
-hd reconnect --all --role client --local-session local-desktop
+hd client reconnect --all --role client --local-session local-desktop
 ```
 
 Registration pins the executable paths of `hd` and `devtunnel`; keep them stable. If either executable is renamed or relocated, check the registrations in the same local core used for registration, remove only the affected machine, then register it again. For the `local-desktop` example above, select that core and inspect the list (POSIX shell):
@@ -114,14 +114,14 @@ Subagent events are ignored so they cannot overwrite root-agent status. `permiss
 ## Reconnect
 
 ```sh
-hd reconnect --all
-hd reconnect --all --role server
-hd reconnect --all --role client --session work
+hd client reconnect --all
+hd client reconnect --all --role server
+hd client reconnect --all --role client --session work
 ```
 
-`r` is an alias for `reconnect`, and `--all` is required. With the default `--role both`, it restarts all **running managed** server profiles with their saved settings, waits for readiness, then asks the local core to reconnect recognized tunnel machines. It leaves stopped profiles, foreground servers, SSH machines, and other transports alone. Server restarts close bridge connections; downtime can be prolonged, and readiness may not return if restart fails. They do not restart persistent cores or agents. For each recognized registration, reconnect calls `machine.connect` without first disconnecting it; it does not remove or re-register machines. Reconnect `--session` and its alias `--local-session` select the local core session containing registrations, not the remote session; both default to `default` when omitted and do not filter server profiles. `--hc PATH` selects the local executable and `--timeout` bounds each client API call. Failures are reported per target, remaining targets are attempted, and any failure yields an unsuccessful exit. Reconnect does not perform login.
+`r` is an alias for `client reconnect`, and `--all` is required. With the default `--role both`, it restarts all **running managed** server profiles with their saved settings, waits for readiness, then asks the local core to reconnect recognized tunnel machines. It leaves stopped profiles, foreground servers, SSH machines, and other transports alone. Server restarts close bridge connections; downtime can be prolonged, and readiness may not return if restart fails. They do not restart persistent cores or agents. For each recognized registration, reconnect calls `machine.connect` without first disconnecting it; it does not remove or re-register machines. Reconnect `--session` and its alias `--local-session` select the local core session containing registrations, not the remote session; both default to `default` when omitted and do not filter server profiles. `--hc PATH` selects the local executable and `--timeout` bounds each client API call. Failures are reported per target, remaining targets are attempted, and any failure yields an unsuccessful exit. Reconnect does not perform login.
 
-Reconnect lists machines through the local `hc` API and recognizes only `--via` registrations whose `connect` command has the expected options and an absolute executable path resolving to the same canonical path as the running executable, including through symlinks. Missing paths and different paths, even identical copies, do not match. Replacing the binary at the same path preserves recognition; relocating it can require re-registration. Each API operation opens a separate `hc connect` process; a machine is reported connected only when `machine.connect` returns state `connected`.
+Reconnect lists machines through the local `hc` API and recognizes only `--via` registrations whose `client transport` command (or legacy `connect` command) has the expected options and an absolute executable path resolving to the same canonical path as the running executable, including through symlinks. Missing paths and different paths, even identical copies, do not match. Replacing the binary at the same path preserves recognition; relocating it can require re-registration. Each API operation opens a separate `hc connect` process; a machine is reported connected only when `machine.connect` returns state `connected`.
 
 The server bridge and reconnect clear inherited `HC_SOCKET` when starting their respective `hc connect --session` processes. They do not clear `HC_SESSION`, and an `hc`-configured socket may still override `--session`; check the `hc` environment and configuration if the wrong core is selected. Server and reconnect `--session` default to `default` rather than reading `HC_SESSION`. Client registration without `--local-session` leaves both environment variables inherited.
 

@@ -159,7 +159,7 @@ mod tests {
     fn cli_requires_explicit_target_and_valid_identifiers() {
         for args in [
             vec!["hd", "server", "start"],
-            vec!["hd", "client", "--tunnel", "box.use2"],
+            vec!["hd", "client", "connect", "--tunnel", "box.use2"],
             vec![
                 "hd", "server", "start", "--tunnel", "box.use2", "--port", "0",
             ],
@@ -175,6 +175,7 @@ mod tests {
             vec![
                 "hd",
                 "client",
+                "connect",
                 "--tunnel",
                 "box.use2",
                 "--name",
@@ -182,9 +183,17 @@ mod tests {
                 "--local-session",
                 "../other",
             ],
-            vec!["hd", "reconnect", "--all", "--local-session", "../other"],
             vec![
                 "hd",
+                "client",
+                "reconnect",
+                "--all",
+                "--local-session",
+                "../other",
+            ],
+            vec![
+                "hd",
+                "client",
                 "reconnect",
                 "--all",
                 "--session",
@@ -205,9 +214,15 @@ mod tests {
             assert!(Cli::try_parse_from(&args).is_err(), "{args:?}");
         }
         Cli::try_parse_from(["hd", "server", "start", "--tunnel", "box.use2"]).unwrap();
-        Cli::try_parse_from(["hd", "add", "--name", "box", "--tunnel", "box.use2"]).unwrap();
-        Cli::try_parse_from(["hd", "r", "--all"]).unwrap();
+        Cli::try_parse_from([
+            "hd", "client", "add", "--name", "box", "--tunnel", "box.use2",
+        ])
+        .unwrap();
+        Cli::try_parse_from(["hd", "client", "r", "--all"]).unwrap();
         assert!(Cli::try_parse_from(["hd", "stop"]).is_err());
+        assert!(Cli::try_parse_from(["hd", "connect", "--tunnel", "box.use2"]).is_err());
+        assert!(Cli::try_parse_from(["hd", "reconnect", "--all"]).is_err());
+        assert!(Cli::try_parse_from(["hd", "client"]).is_err());
         assert!(Cli::try_parse_from(["hd", "serve", "--tunnel", "box.use2"]).is_err());
         assert!(Cli::try_parse_from(["hd", "herdr", "serve", "--tunnel", "box.use2"]).is_err());
         assert!(
@@ -227,6 +242,8 @@ mod tests {
         let client = command
             .find_subcommand_mut("client")
             .unwrap()
+            .find_subcommand_mut("connect")
+            .unwrap()
             .render_long_help()
             .to_string();
         assert!(
@@ -243,6 +260,8 @@ mod tests {
             "{client}"
         );
         let reconnect = command
+            .find_subcommand_mut("client")
+            .unwrap()
             .find_subcommand_mut("reconnect")
             .unwrap()
             .render_long_help()

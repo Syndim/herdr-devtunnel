@@ -24,7 +24,7 @@ pub(crate) async fn setup(args: SetupArgs) -> Result<()> {
             println!("Manage: hd status; hd server stop (add --name PROFILE for named servers).");
         }
         if role != Role::Server {
-            println!("Client: hd client --name remote --tunnel NAME.CLUSTER");
+            println!("Client: hd client connect --name remote --tunnel NAME.CLUSTER");
             println!("Verify: hc machine ls; hc exec --on remote whoami");
             println!("Use Herdr App with this local core; do not add the machine through SSH.");
         }

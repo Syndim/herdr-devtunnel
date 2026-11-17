@@ -122,7 +122,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
                     child.id()
                 );
                 println!(
-                    "CLIENT COMMAND: hd client --name remote --tunnel {} --port {} --session {}",
+                    "CLIENT COMMAND: hd client connect --name remote --tunnel {} --port {} --session {}",
                     state.tunnel, state.port, state.session
                 );
                 println!("Log: {}", log_path.display());

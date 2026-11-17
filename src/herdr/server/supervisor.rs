@@ -209,7 +209,7 @@ async fn watch_host(
                 if !ready && line.contains("Ready to accept connections for tunnel:") {
                     ready = true;
                     reporter.update(c, true, restarts, "ready")?;
-                    eprintln!("[herdr] CLIENT COMMAND: hd client --name remote --tunnel {} --port {} --session {}", c.tunnel, c.port, c.session);
+                    eprintln!("[herdr] CLIENT COMMAND: hd client connect --name remote --tunnel {} --port {} --session {}", c.tunnel, c.port, c.session);
                 }
             }
         }

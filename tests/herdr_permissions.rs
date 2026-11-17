@@ -123,7 +123,7 @@ fn refuses_permissive_managed_directories_without_changing_them() {
     for args in [
         &["status"][..],
         &["server", "stop"][..],
-        &["reconnect", "--all", "--role", "server"][..],
+        &["client", "reconnect", "--all", "--role", "server"][..],
     ] {
         assert_failure(home.command(args), "must have permissions 0700");
     }
@@ -344,7 +344,7 @@ fn rejects_writable_home_without_modifying_it() {
         mkdir(&runtime, 0o700);
         mkdir(&profile, 0o700);
         assert_failure(
-            home.command(&["reconnect", "--all", "--role", "server"]),
+            home.command(&["client", "reconnect", "--all", "--role", "server"]),
             "group or world writable",
         );
         assert!(!profile.join("management.lock").exists());

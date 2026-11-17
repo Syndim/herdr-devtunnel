@@ -10,7 +10,8 @@ pub(super) fn via_command(c: &Connection, dt: String) -> Result<String> {
     let exe = via_path(std::env::current_exe()?.canonicalize()?)?;
     let via = [
         exe,
-        "connect".into(),
+        "client".into(),
+        "transport".into(),
         "--tunnel".into(),
         c.tunnel.clone(),
         "--port".into(),
