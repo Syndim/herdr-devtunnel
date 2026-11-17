@@ -34,18 +34,28 @@ pub(crate) enum Commands {
     },
     /// Show whether a managed server is running and its tunnel is ready.
     Status(crate::background::SessionArgs),
-    /// Reconnect managed servers and registered private-tunnel machines.
-    #[command(alias = "r")]
-    Reconnect(crate::herdr::reconnect::Arguments),
-    /// Register a remote machine with the local hc core, without SSH.
-    #[command(alias = "add")]
-    Client(ClientArgs),
-    #[command(hide = true)]
-    Connect(ConnectArgs),
+    /// Register or reconnect client-side remote machines.
+    Client {
+        #[command(subcommand)]
+        command: ClientCommands,
+    },
     #[command(name = "_tunnel", hide = true)]
     Tunnel(TunnelArgs),
     #[command(hide = true)]
     ServerWorker(crate::background::WorkerArgs),
+}
+
+#[derive(Subcommand)]
+pub(crate) enum ClientCommands {
+    /// Register a remote machine with the local hc core, without SSH.
+    #[command(alias = "add")]
+    Connect(ClientArgs),
+    /// Reconnect managed servers and registered private-tunnel machines.
+    #[command(alias = "r")]
+    Reconnect(crate::herdr::reconnect::Arguments),
+    /// Internal transport used by hc machine registrations.
+    #[command(hide = true)]
+    Transport(ConnectArgs),
 }
 
 #[derive(Subcommand)]
@@ -82,9 +92,15 @@ impl Commands {
                     command: ServerCommands::Stop(args),
                 } => crate::background::stop(args),
                 Self::Status(args) => crate::background::status(args),
-                Self::Reconnect(args) => crate::herdr::reconnect::run(args).await,
-                Self::Client(args) => crate::herdr::client::add(args).await,
-                Self::Connect(args) => crate::herdr::server::connect(args).await,
+                Self::Client {
+                    command: ClientCommands::Connect(args),
+                } => crate::herdr::client::add(args).await,
+                Self::Client {
+                    command: ClientCommands::Reconnect(args),
+                } => crate::herdr::reconnect::run(args).await,
+                Self::Client {
+                    command: ClientCommands::Transport(args),
+                } => crate::herdr::server::connect(args).await,
                 Self::Tunnel(args) => crate::devtunnel::process::tunnel_worker(args).await,
                 Self::ServerWorker(args) => crate::background::worker(args).await,
             }

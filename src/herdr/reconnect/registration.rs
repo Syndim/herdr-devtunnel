@@ -198,11 +198,18 @@ fn is_our_transport_words(words: &[String], current_exe: &Path) -> bool {
     let Some((executable, args)) = words.split_first() else {
         return false;
     };
-    if args.len() < 3 || args[..2] != ["connect", "--tunnel"] || parse_tunnel(&args[2]).is_err() {
+    let options = if args.len() >= 4 && args[..3] == ["client", "transport", "--tunnel"] {
+        &args[3..]
+    } else if args.len() >= 3 && args[..2] == ["connect", "--tunnel"] {
+        &args[2..]
+    } else {
+        return false;
+    };
+    if parse_tunnel(&options[0]).is_err() {
         return false;
     }
     let mut seen = 0u8;
-    for pair in args[3..].chunks(2) {
+    for pair in options[1..].chunks(2) {
         if pair.len() != 2 {
             return false;
         }
@@ -237,20 +244,32 @@ mod tests {
     use super::*;
     #[test]
     fn unix_parser_accepts_only_our_single_quoted_command() {
-        let words = ["/tmp/it's here/hd", "connect", "--tunnel", "abc.use2"];
+        let words = [
+            "/tmp/it's here/hd",
+            "client",
+            "transport",
+            "--tunnel",
+            "abc.use2",
+        ];
         let target = words
             .iter()
             .map(|w| super::shell_quote(w))
             .collect::<Vec<_>>()
             .join(" ");
         assert_eq!(unix_transport_words(&target).unwrap(), words);
-        let legacy = target.replacen(" 'connect'", " 'herdr' 'connect'", 1);
+        let legacy_words = [words[0], "herdr", words[1], words[2], words[3], words[4]];
+        let legacy = legacy_words
+            .iter()
+            .map(|w| super::shell_quote(w))
+            .collect::<Vec<_>>()
+            .join(" ");
         assert_eq!(
             unix_transport_words(&legacy).unwrap(),
             [
                 "/tmp/it's here/hd",
                 "herdr",
-                "connect",
+                "client",
+                "transport",
                 "--tunnel",
                 "abc.use2"
             ]
@@ -275,20 +294,22 @@ mod tests {
     fn windows_parser_matches_hc_rules_for_quotes_and_backslashes() {
         for (command, expected) in [
             (
-                r#"  "C:\Program Files\hd.exe" connect --tunnel "test.use2""#,
+                r#"  "C:\Program Files\hd.exe" client transport --tunnel "test.use2""#,
                 vec![
                     r"C:\Program Files\hd.exe",
-                    "connect",
+                    "client",
+                    "transport",
                     "--tunnel",
                     "test.use2",
                 ],
             ),
             (
-                r#"  "C:\Program Files\hd.exe" herdr connect --tunnel "test.use2""#,
+                r#"  "C:\Program Files\hd.exe" herdr client transport --tunnel "test.use2""#,
                 vec![
                     r"C:\Program Files\hd.exe",
                     "herdr",
-                    "connect",
+                    "client",
+                    "transport",
                     "--tunnel",
                     "test.use2",
                 ],
@@ -383,10 +404,11 @@ mod tests {
         let exe_str = exe.to_str().unwrap();
         let prefix = [exe_str];
         for (args, expected) in [
-            (vec!["connect", "--tunnel", "abc.use2"], true),
+            (vec!["client", "transport", "--tunnel", "abc.use2"], true),
             (
                 vec![
-                    "connect",
+                    "client",
+                    "transport",
                     "--tunnel",
                     "abc.use2",
                     "--timeout",
@@ -400,23 +422,39 @@ mod tests {
                 ],
                 true,
             ),
+            (vec!["connect", "--tunnel", "abc.use2"], true),
             (vec!["connect", "--tunnel", "a"], false),
             (vec!["connect", "--tunnel", "bad;command"], false),
             (vec!["connect", "--tunnel"], false),
             (vec!["connect", "--tunnel=abc.use2"], false),
             (
-                vec!["connect", "--tunnel", "abc.use2", "--tunnel", "other"],
-                false,
-            ),
-            (
                 vec![
-                    "connect", "--tunnel", "abc.use2", "--port", "1", "--port", "2",
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--tunnel",
+                    "other",
                 ],
                 false,
             ),
             (
                 vec![
-                    "connect",
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--port",
+                    "1",
+                    "--port",
+                    "2",
+                ],
+                false,
+            ),
+            (
+                vec![
+                    "client",
+                    "transport",
                     "--tunnel",
                     "abc.use2",
                     "--session",
@@ -428,7 +466,8 @@ mod tests {
             ),
             (
                 vec![
-                    "connect",
+                    "client",
+                    "transport",
                     "--tunnel",
                     "abc.use2",
                     "--timeout",
@@ -440,7 +479,8 @@ mod tests {
             ),
             (
                 vec![
-                    "connect",
+                    "client",
+                    "transport",
                     "--tunnel",
                     "abc.use2",
                     "--devtunnel",
@@ -451,16 +491,24 @@ mod tests {
                 false,
             ),
             (
-                vec!["connect", "--tunnel", "abc.use2", "--port", "0"],
-                false,
-            ),
-            (
-                vec!["connect", "--tunnel", "abc.use2", "--port", "65536"],
+                vec!["client", "transport", "--tunnel", "abc.use2", "--port", "0"],
                 false,
             ),
             (
                 vec![
-                    "connect",
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--port",
+                    "65536",
+                ],
+                false,
+            ),
+            (
+                vec![
+                    "client",
+                    "transport",
                     "--tunnel",
                     "abc.use2",
                     "--session",
@@ -469,27 +517,68 @@ mod tests {
                 false,
             ),
             (
-                vec!["connect", "--tunnel", "abc.use2", "--timeout", "0"],
+                vec![
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--timeout",
+                    "0",
+                ],
                 false,
             ),
             (
-                vec!["connect", "--tunnel", "abc.use2", "--timeout", "601"],
+                vec![
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--timeout",
+                    "601",
+                ],
                 false,
             ),
             (
-                vec!["connect", "--tunnel", "abc.use2", "--devtunnel", ""],
+                vec![
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--devtunnel",
+                    "",
+                ],
                 false,
             ),
             (
-                vec!["connect", "--tunnel", "abc.use2", "--hc", "evil"],
+                vec![
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--hc",
+                    "evil",
+                ],
                 false,
             ),
             (
-                vec!["connect", "--tunnel", "abc.use2", "--bootstrap", "evil"],
+                vec![
+                    "client",
+                    "transport",
+                    "--tunnel",
+                    "abc.use2",
+                    "--bootstrap",
+                    "evil",
+                ],
                 false,
             ),
-            (vec!["connect", "--tunnel", "abc.use2", "--session"], false),
-            (vec!["connect", "--tunnel", "abc.use2", "extra"], false),
+            (
+                vec!["client", "transport", "--tunnel", "abc.use2", "--session"],
+                false,
+            ),
+            (
+                vec!["client", "transport", "--tunnel", "abc.use2", "extra"],
+                false,
+            ),
             (vec!["connect", "connect", "--tunnel", "abc.use2"], false),
             (vec!["herdr", "connect", "--tunnel", "abc.use2"], false),
             (vec!["client", "--tunnel", "abc.use2"], false),
@@ -522,7 +611,7 @@ mod tests {
             }
         }
         for path in ["hd", "", "missing"] {
-            let words = [path, "connect", "--tunnel", "abc.use2"].map(str::to_string);
+            let words = [path, "client", "transport", "--tunnel", "abc.use2"].map(str::to_string);
             assert!(!is_our_transport_words(&words, &exe), "{path:?}");
         }
         assert!(!is_our_transport_words(&[], &exe));

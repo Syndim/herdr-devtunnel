@@ -105,7 +105,7 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         if legacy {
             words.push("herdr");
         }
-        words.extend(["connect", "--tunnel", "test.use2"]);
+        words.extend(["client", "transport", "--tunnel", "test.use2"]);
         words
             .iter()
             .map(|arg| quote(arg))
@@ -135,8 +135,8 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
         .join("..")
         .join(registered.file_name().unwrap());
     let legacy_full = full.replacen(
-        &quote("connect"),
-        &format!("{} {}", quote("herdr"), quote("connect")),
+        &quote("client"),
+        &format!("{} {}", quote("herdr"), quote("client")),
         1,
     );
     let mut machines = serde_json::json!({"machines": [
@@ -185,6 +185,7 @@ fn reconnect_only_our_standalone_transport_and_ignores_inherited_socket() {
     fs::rename(&upgrade, &registered).unwrap();
     let output = Command::new(&registered)
         .args([
+            "client",
             "reconnect",
             "--all",
             "--role",

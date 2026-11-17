@@ -69,6 +69,9 @@ impl Fixture {
         let mut command = Command::new(&self.cli);
         match subcommand {
             "server" => command.args(["server", "start"]),
+            "client" => command.args(["client", "connect"]),
+            "connect" => command.args(["client", "transport"]),
+            "reconnect" | "r" => command.args(["client", "reconnect"]),
             "stop" => command.args(["server", "stop"]),
             _ => command.arg(subcommand),
         };
@@ -528,15 +531,7 @@ fn binary_help_identifies_hd() {
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .collect();
-    for name in [
-        "setup",
-        "doctor",
-        "server",
-        "status",
-        "reconnect",
-        "client",
-        "agent",
-    ] {
+    for name in ["setup", "doctor", "server", "status", "client", "agent"] {
         assert!(commands.contains(&name), "missing {name}: {stdout}");
     }
     let server_help = Command::new(env!("CARGO_BIN_EXE_hd"))
@@ -800,7 +795,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
         "{setup_output}"
     );
     assert!(
-        setup_output.contains("Client: hd client --name remote --tunnel NAME.CLUSTER"),
+        setup_output.contains("Client: hd client connect --name remote --tunnel NAME.CLUSTER"),
         "{setup_output}"
     );
 
@@ -910,11 +905,11 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     let exe = fixture.cli.canonicalize().unwrap();
     #[cfg(not(windows))]
     let expected_via = format!(
-        "--via\n'{}' 'connect'",
+        "--via\n'{}' 'client' 'transport'",
         exe.to_str().unwrap().replace('\'', "'\\''")
     );
     #[cfg(windows)]
-    let expected_via = format!("--via\n\"{}\" \"connect\"", exe.display());
+    let expected_via = format!("--via\n\"{}\" \"client\" \"transport\"", exe.display());
     assert!(
         registration_args.contains(&expected_via),
         "{registration_args}"
@@ -1725,11 +1720,11 @@ fn reconnect_machines(fixture: &Fixture, names: &[&str]) {
     #[cfg(not(windows))]
     let target = {
         let exe = fixture.cli.to_str().unwrap().replace('\'', "'\\''");
-        format!("'{exe}' 'connect' '--tunnel' 'fixture.use2'")
+        format!("'{exe}' 'client' 'transport' '--tunnel' 'fixture.use2'")
     };
     #[cfg(windows)]
     let target = format!(
-        "\"{}\" \"connect\" \"--tunnel\" \"fixture.use2\"",
+        "\"{}\" \"client\" \"transport\" \"--tunnel\" \"fixture.use2\"",
         fixture.cli.display()
     );
     let mut machines: Vec<_> = names
