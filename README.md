@@ -2,16 +2,33 @@
 
 Connect Herdr cores through an owner-only private Dev Tunnel instead of SSH. The server exposes an `hc` session through a loopback bridge; the client registers that bridge as a machine in its local core. Herdr App can then use that core to access the remote machine and its spaces.
 
-## Prerequisites
+> **Unofficial project:** herdr-devtunnel is not an official Herdr or Microsoft project and is not affiliated with or endorsed by either organization.
 
-Install the executable on both machines from the [GitHub repository](https://github.com/Syndim/herdr-devtunnel) with Rust 1.89 or later:
+## Installation
+
+### Install with mise
+
+Install `hd` from the latest GitHub release using [mise](https://mise.jdx.dev/):
+
+```sh
+mise use -g github:Syndim/herdr-devtunnel@latest
+mise exec -- hd --help
+```
+
+To pin a release instead, replace `latest` with its version without the leading `v`, for example `github:Syndim/herdr-devtunnel@0.6.0`. Install the executable on both the server and client machines. The release workflow provides archives for Linux x86_64, macOS x86_64 and arm64, and Windows x86_64; mise selects the matching archive and exposes the `hd` executable.
+
+### Build from source
+
+Alternatively, install from the [GitHub repository](https://github.com/Syndim/herdr-devtunnel) with Rust 1.89 or later:
 
 ```sh
 cargo install --locked --git https://github.com/Syndim/herdr-devtunnel.git
 hd --help
 ```
 
-Also install Herdr Core (`hc`) and the official Microsoft Dev Tunnels CLI (`devtunnel`) on both machines. The client needs an `hc` that supports `machine add --via`; the server needs `hc connect --session`. On Unix, `hc` runs `--via` through `sh`, which must be on `PATH`. On Windows, Herdr Core 0.1.20 and later launch `--via` directly, so this tunnel does not require Git or `sh` on the Windows client. This behavior is documented for [Herdr Core 0.1.21](https://github.com/herdrdev/herdr-core/blob/v0.1.21/docs/machines.md#use-another-way-in). Other Herdr Core features may have separate shell requirements. Herdr App is optional on the client for the desktop UI.
+## Prerequisites
+
+Install Herdr Core (`hc`) and the official Microsoft Dev Tunnels CLI (`devtunnel`) on both machines. The client needs an `hc` that supports `machine add --via`; the server needs `hc connect --session`. On Unix, `hc` runs `--via` through `sh`, which must be on `PATH`. On Windows, Herdr Core 0.1.20 and later launch `--via` directly, so this tunnel does not require Git or `sh` on the Windows client. This behavior is documented for [Herdr Core 0.1.21](https://github.com/herdrdev/herdr-core/blob/v0.1.21/docs/machines.md#use-another-way-in). Other Herdr Core features may have separate shell requirements. Herdr App is optional on the client for the desktop UI.
 
 The client emits POSIX shell quoting on Unix and Windows command-line quoting on Windows. For client roles, `doctor` checks for `--via` in `hc` help and, on Unix, `sh` on `PATH`. On Windows, both `doctor` and client registration require the help output to advertise `CommandLineToArgvW` and `no shell`; this check does not prove runtime compatibility.
 
