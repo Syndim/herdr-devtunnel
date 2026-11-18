@@ -4,6 +4,26 @@ use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 
 use super::validation::{parse_machine, parse_session, parse_tunnel};
+
+fn default_max_bridge_connections() -> u16 {
+    128
+}
+
+fn legacy_max_bridge_connections() -> u16 {
+    32
+}
+
+fn deserialize_max_bridge_connections<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u16, D::Error> {
+    let value = u16::deserialize(deserializer)?;
+    if !(1..=4096).contains(&value) {
+        return Err(serde::de::Error::custom(
+            "bridge connection limit must be between 1 and 4096",
+        ));
+    }
+    Ok(value)
+}
 #[derive(Clone, Copy, ValueEnum, PartialEq)]
 pub(crate) enum Role {
     Client,
@@ -69,6 +89,13 @@ pub(crate) struct ServerArgs {
     /// Maximum tunnel host restarts before exiting (0 = unlimited).
     #[arg(long, default_value_t = 0)]
     pub(crate) max_restarts: u32,
+    /// Maximum concurrent bridge connections, including handshakes.
+    #[arg(long, default_value_t = default_max_bridge_connections(), value_parser = clap::value_parser!(u16).range(1..=4096))]
+    #[serde(
+        default = "legacy_max_bridge_connections",
+        deserialize_with = "deserialize_max_bridge_connections"
+    )]
+    pub(crate) max_bridge_connections: u16,
     /// Additional case-insensitive failure regex (repeatable).
     #[arg(long = "pattern", value_name = "REGEX")]
     pub(crate) patterns: Vec<String>,

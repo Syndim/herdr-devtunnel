@@ -1534,6 +1534,210 @@ fn wait_until(mut condition: impl FnMut() -> bool) {
     }
 }
 
+fn open_bridge(fixture: &Fixture) -> BufReader<TcpStream> {
+    let socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut socket = BufReader::new(socket);
+    socket
+        .get_mut()
+        .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nprobe")
+        .unwrap();
+    let mut hello = String::new();
+    socket.read_line(&mut hello).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&hello).unwrap()["ok"],
+        true
+    );
+    let mut probe = [0; 5];
+    socket.read_exact(&mut probe).unwrap();
+    assert_eq!(&probe, b"probe");
+    socket
+}
+
+#[test]
+fn max_bridge_connections_limits_foreground_server_and_releases_slots() {
+    let fixture = Fixture::new();
+    let mut command = fixture.foreground_server();
+    command.args(["--max-bridge-connections", "2"]);
+    let mut server = Running::start(command);
+    server.ready();
+
+    let mut first = open_bridge(&fixture);
+    let mut second = open_bridge(&fixture);
+    let first_process = fixture_identity(&fixture.root.join("hc-connection-1/pid"));
+    let second_process = fixture_identity(&fixture.root.join("hc-connection-2/pid"));
+    let connections = hc_connections(&fixture);
+    assert_eq!(connections.len(), 2);
+
+    let mut rejected = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut byte = [0; 1];
+    match rejected.read(&mut byte) {
+        Ok(count) => assert_eq!(count, 0),
+        Err(error) => assert!(
+            matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+            ),
+            "{error}"
+        ),
+    }
+    wait_until(|| {
+        server
+            .log
+            .lock()
+            .unwrap()
+            .contains("Rejected connection: bridge connection limit reached")
+    });
+    assert!(server.log.lock().unwrap().contains(
+        "limit=2; tracked=2; handshake=0; setup=0; forwarding=2; draining=0; cleanup=0; oldest="
+    ));
+    assert_eq!(hc_connections(&fixture), connections);
+    assert!(first_process.is_alive());
+    assert!(second_process.is_alive());
+
+    first.get_mut().shutdown(Shutdown::Write).unwrap();
+    let mut trailing = Vec::new();
+    first.read_to_end(&mut trailing).unwrap();
+    assert!(trailing.is_empty());
+    first_process.wait_for_exit();
+    wait_until(|| {
+        server
+            .log
+            .lock()
+            .unwrap()
+            .contains("Bridge #1 closed: reason=client EOF; hc output drain; age=")
+    });
+
+    let mut replacement = None;
+    wait_until(|| {
+        let socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        let mut socket = BufReader::new(socket);
+        if let Err(error) = socket
+            .get_mut()
+            .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nprobe")
+        {
+            assert!(matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            ));
+            return false;
+        }
+        let mut hello = String::new();
+        match socket.read_line(&mut hello) {
+            Ok(0) => return false,
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return false;
+            }
+            Err(error) => panic!("replacement handshake: {error}"),
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&hello).unwrap()["ok"],
+            true
+        );
+        let mut probe = [0; 5];
+        socket.read_exact(&mut probe).unwrap();
+        assert_eq!(&probe, b"probe");
+        replacement = Some(socket);
+        true
+    });
+    let mut replacement = replacement.unwrap();
+    let replacement_process = fixture_identity(&fixture.root.join("hc-connection-3/pid"));
+    assert!(second_process.is_alive());
+    second.get_mut().write_all(b"still alive").unwrap();
+    let mut echoed = [0; 11];
+    second.read_exact(&mut echoed).unwrap();
+    assert_eq!(&echoed, b"still alive");
+    for socket in [&mut second, &mut replacement] {
+        socket.get_mut().shutdown(Shutdown::Write).unwrap();
+        let mut trailing = Vec::new();
+        socket.read_to_end(&mut trailing).unwrap();
+        assert!(trailing.is_empty());
+    }
+    second_process.wait_for_exit();
+    replacement_process.wait_for_exit();
+}
+
+#[test]
+fn bridge_limit_diagnostics_report_pending_handshakes() {
+    let fixture = Fixture::new();
+    let mut command = fixture.foreground_server();
+    command.args(["--max-bridge-connections", "2"]);
+    let mut server = Running::start(command);
+    server.ready();
+    let mut first = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    let mut second = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    first.write_all(b"{").unwrap();
+    second.write_all(b"{").unwrap();
+    wait_until(|| server.log.lock().unwrap().contains("Bridge #2 accepted"));
+    let mut rejected = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    rejected
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    let mut byte = [0; 1];
+    match rejected.read(&mut byte) {
+        Ok(count) => assert_eq!(count, 0),
+        Err(error) => assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+        )),
+    }
+    wait_until(|| {
+        server.log.lock().unwrap().contains(
+            "limit=2; tracked=2; handshake=2; setup=0; forwarding=0; draining=0; cleanup=0; oldest=",
+        )
+    });
+}
+
+#[test]
+fn max_bridge_connections_validates_range() {
+    let fixture = Fixture::new();
+    for value in ["0", "4097", "not-a-number"] {
+        let output = fixture
+            .foreground_server()
+            .args(["--max-bridge-connections", value])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{value}");
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.contains("--max-bridge-connections"), "{stderr}");
+        assert!(!stderr.contains("unexpected argument"), "{stderr}");
+    }
+    assert!(!fixture.root.join("tunnel-commands").exists());
+    assert!(!fixture.root.join(".herdr-devtunnel").exists());
+
+    for value in ["1", "4096"] {
+        let mut command = fixture.foreground_server();
+        command.args(["--max-bridge-connections", value]);
+        let mut server = Running::start(command);
+        server.ready();
+        let host = fixture_identity(&fixture.root.join("host-pid"));
+        let mut socket = open_bridge(&fixture);
+        socket.get_mut().shutdown(Shutdown::Write).unwrap();
+        let mut trailing = Vec::new();
+        socket.read_to_end(&mut trailing).unwrap();
+        assert!(trailing.is_empty());
+        server.child.kill().unwrap();
+        server.child.wait().unwrap();
+        host.wait_for_exit();
+    }
+}
+
 #[test]
 fn disconnected_clients_release_all_bridge_slots_when_hc_ignores_eof() {
     let fixture = Fixture::new();
@@ -1751,6 +1955,43 @@ fn reconnected_names(fixture: &Fixture) -> Vec<String> {
         .filter(|request| request["method"] == "machine.connect")
         .map(|request| request["params"]["machine"].as_str().unwrap().to_string())
         .collect()
+}
+
+#[test]
+fn max_bridge_connections_defaults_for_legacy_managed_config_on_reconnect() {
+    let fixture = Fixture::new();
+    success(&fixture.connection("server").output().unwrap());
+    let config_path = fixture
+        .root
+        .join(".herdr-devtunnel/server-default/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["max_bridge_connections"], 128);
+    config
+        .as_object_mut()
+        .unwrap()
+        .remove("max_bridge_connections")
+        .unwrap();
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let old_worker = fixture.state()["pid"].as_u64().unwrap().to_string();
+    let old_process = ProcessIdentity::capture(&old_worker);
+
+    let output = fixture
+        .command("reconnect")
+        .args(["--all", "--role", "server"])
+        .output()
+        .unwrap();
+    success(&output);
+    assert!(String::from_utf8_lossy(&output.stdout).contains("Reconnecting server 'default'"));
+    assert_ne!(
+        fixture.state()["pid"].as_u64().unwrap().to_string(),
+        old_worker
+    );
+    assert_eq!(fixture.state()["ready"], true);
+    old_process.wait_for_exit();
+    let restored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(restored["max_bridge_connections"], 32);
 }
 
 #[test]
