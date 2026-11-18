@@ -9,7 +9,7 @@ use tokio::sync::watch;
 use tokio::time::timeout;
 
 use super::protocol::{MAGIC, read_hello, write_hello};
-use super::supervisor::stopped;
+use super::supervisor::{BridgeActivity, stopped};
 use crate::process::{combine_results, command};
 
 const BRIDGE_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -19,21 +19,28 @@ pub(super) async fn bridge(
     mut socket: TcpStream,
     hc: PathBuf,
     session: String,
+    activity: &BridgeActivity,
     mut stop: watch::Receiver<bool>,
 ) -> (Result<()>, Result<()>) {
     let mut child = None;
+    let mut reason = "handshake or setup failed";
     let result = async {
         socket.set_nodelay(true)?;
         let hello = tokio::select! {
             biased;
-            result = stopped(&mut stop) => return result,
+            result = stopped(&mut stop) => {
+                reason = "server shutdown";
+                return result;
+            },
             result = read_hello(&mut socket, 10) => result?,
         };
         ensure!(
             hello.protocol == MAGIC && hello.session == session,
             "Wrong protocol or session"
         );
+        activity.set_stage("setup");
         if *stop.borrow() {
+            reason = "server shutdown";
             return Ok(());
         }
         child = Some(
@@ -50,9 +57,14 @@ pub(super) async fn bridge(
         let mut output = child.stdout.take().context("Missing hc stdout")?;
         tokio::select! {
             biased;
-            result = stopped(&mut stop) => return result,
+            result = stopped(&mut stop) => {
+                reason = "server shutdown";
+                return result;
+            },
             result = write_hello(&mut socket, &session, Some(true)) => result?,
         }
+        activity.set_stage("forwarding");
+        reason = "forwarding failed";
         let (mut read, mut write) = socket.into_split();
         let incoming = async {
             tokio::io::copy(&mut read, &mut input).await?;
@@ -70,21 +82,35 @@ pub(super) async fn bridge(
         tokio::pin!(outgoing);
         tokio::select! {
             biased;
-            result = stopped(&mut stop) => result,
+            result = stopped(&mut stop) => {
+                reason = "server shutdown";
+                result
+            },
             result = &mut incoming => {
+                reason = "client input failed";
                 result?;
+                reason = "client EOF";
+                activity.set_stage("draining");
                 tokio::select! {
                     biased;
-                    result = stopped(&mut stop) => result,
+                    result = stopped(&mut stop) => {
+                        reason = "server shutdown";
+                        result
+                    },
                     result = timeout(BRIDGE_DRAIN_TIMEOUT, outgoing) => {
+                        reason = "client EOF; hc output drain";
                         result.context("hc output drain timed out after client EOF")?
                     }
                 }
             }
-            result = &mut outgoing => result,
+            result = &mut outgoing => {
+                reason = if result.is_ok() { "hc output closed" } else { "hc output failed" };
+                result
+            },
         }
     }
     .await;
+    activity.set_stage("cleanup");
     let cleanup = if let Some(mut child) = child {
         match child.try_wait() {
             Ok(Some(_)) => Ok(()),
@@ -113,5 +139,12 @@ pub(super) async fn bridge(
     } else {
         Ok(())
     };
+    eprintln!(
+        "[herdr] Bridge #{} closed: reason={reason}; age={}s; result={}; cleanup={}",
+        activity.id(),
+        activity.age().as_secs(),
+        if result.is_ok() { "ok" } else { "error" },
+        if cleanup.is_ok() { "ok" } else { "error" }
+    );
     (result, cleanup)
 }

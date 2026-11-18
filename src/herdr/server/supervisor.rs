@@ -1,6 +1,7 @@
+use std::collections::BTreeMap;
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail, ensure};
 use regex::Regex;
@@ -18,6 +19,55 @@ use crate::herdr::config::{ConnectArgs, Connection, ServerArgs};
 use crate::herdr::validation::executable;
 use crate::process::combine_results;
 use crate::process::shutdown::shutdown_signal;
+struct BridgeInfo {
+    started: Instant,
+    stage: &'static str,
+}
+
+pub(super) struct BridgeActivity {
+    id: u64,
+    started: Instant,
+    entries: Arc<Mutex<BTreeMap<u64, BridgeInfo>>>,
+}
+
+impl BridgeActivity {
+    fn new(id: u64, entries: Arc<Mutex<BTreeMap<u64, BridgeInfo>>>) -> Self {
+        let started = Instant::now();
+        entries.lock().unwrap().insert(
+            id,
+            BridgeInfo {
+                started,
+                stage: "handshake",
+            },
+        );
+        Self {
+            id,
+            started,
+            entries,
+        }
+    }
+
+    pub(super) fn set_stage(&self, stage: &'static str) {
+        if let Some(info) = self.entries.lock().unwrap().get_mut(&self.id) {
+            info.stage = stage;
+        }
+    }
+
+    pub(super) fn id(&self) -> u64 {
+        self.id
+    }
+
+    pub(super) fn age(&self) -> Duration {
+        self.started.elapsed()
+    }
+}
+
+impl Drop for BridgeActivity {
+    fn drop(&mut self) {
+        self.entries.lock().unwrap().remove(&self.id);
+    }
+}
+
 pub(crate) async fn serve(args: ServerArgs, reporter: &Reporter) -> Result<()> {
     let matchers = crate::devtunnel::build_failure_matchers(&args.patterns)?;
     let mut c = args.connection.clone();
@@ -42,7 +92,14 @@ pub(crate) async fn serve(args: ServerArgs, reporter: &Reporter) -> Result<()> {
     );
     let (stop, receiver) = watch::channel(false);
     let guard = guard_host(c.clone(), &args, &matchers, reporter, receiver.clone());
-    let bridge = accept_connections(listener, hc, c.session, stop.clone(), receiver);
+    let bridge = accept_connections(
+        listener,
+        hc,
+        c.session,
+        usize::from(args.max_bridge_connections),
+        stop.clone(),
+        receiver,
+    );
     tokio::pin!(guard, bridge);
     let (result, guard_done, bridge_done) = tokio::select! {
         result = &mut guard => (result, true, false),
@@ -64,10 +121,13 @@ async fn accept_connections(
     listener: TcpListener,
     hc: PathBuf,
     session: String,
+    limit: usize,
     stop: watch::Sender<bool>,
     mut receiver: watch::Receiver<bool>,
 ) -> Result<()> {
-    let permits = Arc::new(Semaphore::new(32));
+    let permits = Arc::new(Semaphore::new(limit));
+    let entries = Arc::new(Mutex::new(BTreeMap::new()));
+    let mut next_id = 0u64;
     let mut connections = JoinSet::new();
     let mut result = loop {
         tokio::select! {
@@ -88,22 +148,33 @@ async fn accept_connections(
                         let hc = hc.clone();
                         let session = session.clone();
                         let receiver = receiver.clone();
+                        next_id = next_id.wrapping_add(1);
+                        let activity = BridgeActivity::new(next_id, entries.clone());
+                        eprintln!("[herdr] Bridge #{} accepted", activity.id());
                         connections.spawn(async move {
                             let _permit = permit;
-                            let (result, cleanup) = bridge(socket, hc, session, receiver).await;
+                            let (result, cleanup) = bridge(socket, hc, session, &activity, receiver).await;
                             match (result, cleanup) {
                                 (Err(error), Err(cleanup)) => {
-                                    Err(cleanup.context(format!("Bridge failed: {error:#}")))
+                                    Err(cleanup.context(format!("Bridge #{} failed: {error:#}", activity.id())))
                                 }
                                 (Err(error), Ok(())) => {
-                                    eprintln!("[herdr] Bridge rejected/closed: {error:#}");
+                                    eprintln!("[herdr] Bridge #{} rejected/closed: {error:#}", activity.id());
                                     Ok(())
                                 }
                                 (Ok(()), cleanup) => cleanup,
                             }
                         });
                     }
-                    Err(_) => eprintln!("[herdr] Rejected connection: bridge connection limit reached"),
+                    Err(_) => {
+                        let (tracked, handshake, setup, forwarding, draining, cleanup, oldest) = {
+                            let entries = entries.lock().unwrap();
+                            let count = |stage| entries.values().filter(|info| info.stage == stage).count();
+                            (entries.len(), count("handshake"), count("setup"), count("forwarding"), count("draining"), count("cleanup"),
+                             entries.values().map(|info| info.started.elapsed().as_secs()).max().unwrap_or(0))
+                        };
+                        eprintln!("[herdr] Rejected connection: bridge connection limit reached (limit={limit}; tracked={tracked}; handshake={handshake}; setup={setup}; forwarding={forwarding}; draining={draining}; cleanup={cleanup}; oldest={oldest}s)");
+                    },
                 }
             }
         }
