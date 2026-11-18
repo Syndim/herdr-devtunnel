@@ -36,12 +36,12 @@ impl Home {
     }
 
     fn status(&self) -> Output {
-        self.command(&["status"])
+        self.command(&["server", "status"])
     }
 
     fn status_at(&self, home: &Path) -> Output {
         Command::new(env!("CARGO_BIN_EXE_hd"))
-            .arg("status")
+            .args(["server", "status"])
             .env("HOME", home)
             .current_dir(&self.0)
             .output()
@@ -52,7 +52,7 @@ impl Home {
         Command::new("sh")
             .args(["-c", "umask \"$1\"; shift; exec \"$@\"", "sh", mask])
             .arg(env!("CARGO_BIN_EXE_hd"))
-            .arg("status")
+            .args(["server", "status"])
             .env("HOME", &self.0)
             .current_dir(&self.0)
             .output()
@@ -121,7 +121,7 @@ fn refuses_permissive_managed_directories_without_changing_them() {
     mkdir(&runtime, 0o755);
     mkdir(&profile, 0o700);
     for args in [
-        &["status"][..],
+        &["server", "status"][..],
         &["server", "stop"][..],
         &["client", "reconnect", "--all", "--role", "server"][..],
     ] {
@@ -334,7 +334,7 @@ fn rejects_writable_home_without_modifying_it() {
     for permissions in [0o720, 0o702, 0o775, 0o777, 0o1777] {
         let home = Home::new();
         fs::set_permissions(&home.0, fs::Permissions::from_mode(permissions)).unwrap();
-        for args in [&["status"][..], &["server", "stop"][..]] {
+        for args in [&["server", "status"][..], &["server", "stop"][..]] {
             assert_failure(home.command(args), "group or world writable");
         }
         assert_eq!(mode(&home.0), permissions);

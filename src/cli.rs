@@ -32,8 +32,6 @@ pub(crate) enum Commands {
         #[command(subcommand)]
         command: ServerCommands,
     },
-    /// Show whether a managed server is running and its tunnel is ready.
-    Status(crate::background::SessionArgs),
     /// Register or reconnect client-side remote machines.
     Client {
         #[command(subcommand)]
@@ -64,6 +62,8 @@ pub(crate) enum ServerCommands {
     Start(ServerArgs),
     /// Stop only the named managed bridge and its tunnel host, not hc/agents.
     Stop(crate::background::SessionArgs),
+    /// Show whether a managed server is running and its tunnel is ready.
+    Status(crate::background::SessionArgs),
 }
 
 impl Commands {
@@ -91,7 +91,9 @@ impl Commands {
                 Self::Server {
                     command: ServerCommands::Stop(args),
                 } => crate::background::stop(args),
-                Self::Status(args) => crate::background::status(args),
+                Self::Server {
+                    command: ServerCommands::Status(args),
+                } => crate::background::status(args),
                 Self::Client {
                     command: ClientCommands::Connect(args),
                 } => crate::herdr::client::add(args).await,

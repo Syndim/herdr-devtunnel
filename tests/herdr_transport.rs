@@ -73,6 +73,7 @@ impl Fixture {
             "connect" => command.args(["client", "transport"]),
             "reconnect" | "r" => command.args(["client", "reconnect"]),
             "stop" => command.args(["server", "stop"]),
+            "status" => command.args(["server", "status"]),
             _ => command.arg(subcommand),
         };
         if !matches!(subcommand, "status" | "stop" | "reconnect" | "r") {
@@ -531,7 +532,7 @@ fn binary_help_identifies_hd() {
         .lines()
         .filter_map(|line| line.split_whitespace().next())
         .collect();
-    for name in ["setup", "doctor", "server", "status", "client", "agent"] {
+    for name in ["setup", "doctor", "server", "client", "agent"] {
         assert!(commands.contains(&name), "missing {name}: {stdout}");
     }
     let server_help = Command::new(env!("CARGO_BIN_EXE_hd"))
@@ -542,8 +543,15 @@ fn binary_help_identifies_hd() {
     let server_help = String::from_utf8_lossy(&server_help.stdout);
     assert!(server_help.contains("start"), "{server_help}");
     assert!(server_help.contains("stop"), "{server_help}");
+    assert!(server_help.contains("status"), "{server_help}");
+    let legacy = Command::new(env!("CARGO_BIN_EXE_hd"))
+        .args(["status", "--help"])
+        .output()
+        .unwrap();
+    assert!(!legacy.status.success());
     for name in [
         "herdr",
+        "status",
         "connect",
         "_tunnel",
         "server-worker",
@@ -551,6 +559,27 @@ fn binary_help_identifies_hd() {
     ] {
         assert!(!commands.contains(&name), "unexpected {name}: {stdout}");
     }
+}
+
+#[test]
+fn server_status_selects_managed_profile_and_validates_name() {
+    let fixture = Fixture::new();
+    let default = fixture.command("status").output().unwrap();
+    success(&default);
+    assert!(String::from_utf8_lossy(&default.stdout).contains("Server 'default' is not running."));
+    let named = fixture
+        .command("status")
+        .args(["--name", "workbox"])
+        .output()
+        .unwrap();
+    success(&named);
+    assert!(String::from_utf8_lossy(&named.stdout).contains("Server 'workbox' is not running."));
+    let invalid = fixture
+        .command("status")
+        .args(["--name", "../invalid"])
+        .output()
+        .unwrap();
+    assert!(!invalid.status.success());
 }
 
 #[test]
@@ -792,6 +821,10 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     let setup_output = String::from_utf8_lossy(&setup.stdout);
     assert!(
         setup_output.contains("Server: hd server start --tunnel UNIQUE-NAME"),
+        "{setup_output}"
+    );
+    assert!(
+        setup_output.contains("Manage: hd server status; hd server stop"),
         "{setup_output}"
     );
     assert!(
@@ -2040,6 +2073,25 @@ fn reconnect_all_restarts_running_servers_and_preserves_client_registrations() {
         serde_json::from_slice(&fs::read(second_directory.join("state.json")).unwrap()).unwrap()
     };
     let second_worker = second_state()["pid"].as_u64().unwrap().to_string();
+    let second_status = fixture
+        .command("status")
+        .args(["--name", "second"])
+        .output()
+        .unwrap();
+    success(&second_status);
+    let second_output = String::from_utf8_lossy(&second_status.stdout);
+    assert!(second_output.contains("Server 'second'"), "{second_output}");
+    assert!(
+        second_output.contains(&format!("PID {second_worker}")),
+        "{second_output}"
+    );
+    let default_status = fixture.command("status").output().unwrap();
+    success(&default_status);
+    let default_output = String::from_utf8_lossy(&default_status.stdout);
+    assert!(
+        default_output.contains(&format!("PID {old_worker}")),
+        "{default_output}"
+    );
     let second_worker_process = ProcessIdentity::capture(&second_worker);
     let second_config = fs::read(second_directory.join("config.json")).unwrap();
     let stopped = fixture.root.join(".herdr-devtunnel/server-stopped");
@@ -2513,7 +2565,10 @@ fn matching_server_fails_during_startup_and_recovery_then_succeeds_when_ready() 
     assert!(!retry.status.success());
     let stderr = String::from_utf8_lossy(&retry.stderr);
     assert!(stderr.contains("not ready"), "{stderr}");
-    assert!(stderr.contains("status --name default"), "{stderr}");
+    assert!(
+        stderr.contains("hd server status --name default"),
+        "{stderr}"
+    );
     assert!(stderr.contains("retry `server start`"), "{stderr}");
     assert!(!String::from_utf8_lossy(&retry.stdout).contains("already running"));
     assert_eq!(fixture.state()["pid"].as_u64(), Some(worker_pid));

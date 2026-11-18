@@ -21,7 +21,9 @@ pub(crate) async fn setup(args: SetupArgs) -> Result<()> {
             println!("Server: hd server start --tunnel UNIQUE-NAME");
             println!("The server creates a missing tunnel/port or reuses a valid private tunnel.");
             println!("It runs in the background and returns only after tunnel readiness.");
-            println!("Manage: hd status; hd server stop (add --name PROFILE for named servers).");
+            println!(
+                "Manage: hd server status; hd server stop (add --name PROFILE for named servers)."
+            );
         }
         if role != Role::Server {
             println!("Client: hd client connect --name remote --tunnel NAME.CLUSTER");

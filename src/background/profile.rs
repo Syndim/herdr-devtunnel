@@ -48,7 +48,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
         );
         ensure!(
             !directory.join("stop").try_exists()?,
-            "Server '{}' has a shutdown request pending; shutdown is cooperative and may take time. Check `hd status --name {}` and retry `hd server stop --name {}` if needed; then retry `server start`. See {}",
+            "Server '{}' has a shutdown request pending; shutdown is cooperative and may take time. Check `hd server status --name {}` and retry `hd server stop --name {}` if needed; then retry `server start`. See {}",
             args.name,
             args.name,
             args.name,
@@ -57,7 +57,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
         let state = read_state(directory)?;
         let Some(state) = state.filter(|state| state.ready) else {
             bail!(
-                "Server '{}' is running but not ready (it may still be starting or recovering). It remains active and may retry in the background. Check `hd status --name {}` and retry `server start` when ready, or request shutdown with `hd server stop --name {}`. See {}",
+                "Server '{}' is running but not ready (it may still be starting or recovering). It remains active and may retry in the background. Check `hd server status --name {}` and retry `server start` when ready, or request shutdown with `hd server stop --name {}`. See {}",
                 args.name,
                 args.name,
                 args.name,
@@ -132,7 +132,7 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
         if started.elapsed() >= startup_timeout {
             fs::write(directory.join("stop"), b"").context("Failed to cancel Herdr startup")?;
             bail!(
-                "Herdr startup timed out; shutdown was requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd status --name {}` and retry `hd server stop --name {}` if needed. See {}",
+                "Herdr startup timed out; shutdown was requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd server status --name {}` and retry `hd server stop --name {}` if needed. See {}",
                 args.name,
                 args.name,
                 log_path.display()
@@ -191,7 +191,7 @@ pub(crate) fn stop_in_directory(name: &str, directory: &Path) -> Result<()> {
     while lifecycle::running(directory)? {
         ensure!(
             started.elapsed() < Duration::from_secs(10),
-            "Server '{}' has not stopped after 10 seconds; shutdown remains requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd status --name {}` and retry `hd server stop --name {}` if needed. See {}",
+            "Server '{}' has not stopped after 10 seconds; shutdown remains requested but is not confirmed. Shutdown is cooperative and may take time. Check `hd server status --name {}` and retry `hd server stop --name {}` if needed. See {}",
             name,
             name,
             name,
