@@ -83,11 +83,12 @@ pub(crate) async fn serve(args: ServerArgs, reporter: &Reporter) -> Result<()> {
         result = &mut shutdown => return result,
         result = &mut requested => return result,
     }
-    eprintln!(
+    log::info!(target: "herdr_events",
         "[herdr] Bridge listening on 127.0.0.1:{}; hc session={}",
-        c.port, c.session
+        c.port,
+        c.session
     );
-    eprintln!(
+    log::info!(target: "herdr_events",
         "[herdr] Tunnel clients and trusted local processes get full hc access as this user."
     );
     let (stop, receiver) = watch::channel(false);
@@ -150,7 +151,7 @@ async fn accept_connections(
                         let receiver = receiver.clone();
                         next_id = next_id.wrapping_add(1);
                         let activity = BridgeActivity::new(next_id, entries.clone());
-                        eprintln!("[herdr] Bridge #{} accepted", activity.id());
+                        log::info!(target: "herdr_events", "[herdr] Bridge #{} accepted", activity.id());
                         connections.spawn(async move {
                             let _permit = permit;
                             let (result, cleanup) = bridge(socket, hc, session, &activity, receiver).await;
@@ -159,7 +160,7 @@ async fn accept_connections(
                                     Err(cleanup.context(format!("Bridge #{} failed: {error:#}", activity.id())))
                                 }
                                 (Err(error), Ok(())) => {
-                                    eprintln!("[herdr] Bridge #{} rejected/closed: {error:#}", activity.id());
+                                    log::info!(target: "herdr_events", "[herdr] Bridge #{} rejected/closed: {error:#}", activity.id());
                                     Ok(())
                                 }
                                 (Ok(()), cleanup) => cleanup,
@@ -173,7 +174,7 @@ async fn accept_connections(
                             (entries.len(), count("handshake"), count("setup"), count("forwarding"), count("draining"), count("cleanup"),
                              entries.values().map(|info| info.started.elapsed().as_secs()).max().unwrap_or(0))
                         };
-                        eprintln!("[herdr] Rejected connection: bridge connection limit reached (limit={limit}; tracked={tracked}; handshake={handshake}; setup={setup}; forwarding={forwarding}; draining={draining}; cleanup={cleanup}; oldest={oldest}s)");
+                        log::info!(target: "herdr_events", "[herdr] Rejected connection: bridge connection limit reached (limit={limit}; tracked={tracked}; handshake={handshake}; setup={setup}; forwarding={forwarding}; draining={draining}; cleanup={cleanup}; oldest={oldest}s)");
                     },
                 }
             }
@@ -239,13 +240,13 @@ async fn guard_host(
             Err(error) => error,
         };
         reporter.update(&c, false, restarts, &format!("recovering: {error:#}"))?;
-        eprintln!("[herdr] Tunnel host failed: {error:#}");
+        log::info!(target: "herdr_events", "[herdr] Tunnel host failed: {error:#}");
         if args.max_restarts != 0 && restarts >= args.max_restarts {
             return Err(error).context(format!("Reached max restarts ({})", args.max_restarts));
         }
         restarts = restarts.saturating_add(1);
         reporter.update(&c, false, restarts, "waiting to restart tunnel host")?;
-        eprintln!(
+        log::info!(target: "herdr_events",
             "[herdr] Restarting tunnel host (attempt #{restarts}) after {}s cooldown",
             args.cooldown
         );
@@ -280,7 +281,7 @@ async fn watch_host(
                 if !ready && line.contains("Ready to accept connections for tunnel:") {
                     ready = true;
                     reporter.update(c, true, restarts, "ready")?;
-                    eprintln!("[herdr] CLIENT COMMAND: hd client connect --name remote --tunnel {} --port {} --session {}", c.tunnel, c.port, c.session);
+                    log::info!(target: "herdr_events", "[herdr] CLIENT COMMAND: hd client connect --name remote --tunnel {} --port {} --session {}", c.tunnel, c.port, c.session);
                 }
             }
         }
