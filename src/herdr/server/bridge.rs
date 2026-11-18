@@ -3,7 +3,7 @@ use std::process::Stdio;
 use std::time::Duration;
 
 use anyhow::{Context, Result, ensure};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::watch;
 use tokio::time::timeout;
@@ -14,6 +14,47 @@ use crate::process::{combine_results, command};
 
 const BRIDGE_DRAIN_TIMEOUT: Duration = Duration::from_secs(10);
 const BRIDGE_CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+const STDERR_LINE_LIMIT: usize = 65536;
+
+async fn log_child_stderr(mut stream: impl AsyncRead + Unpin, id: u64) {
+    let mut chunk = [0; 8192];
+    let mut line = Vec::new();
+    loop {
+        match stream.read(&mut chunk).await {
+            Ok(0) => break,
+            Ok(count) => {
+                for &byte in &chunk[..count] {
+                    if byte == b'\n' {
+                        log_child_line(id, &line);
+                        line.clear();
+                    } else {
+                        line.push(byte);
+                        if line.len() == STDERR_LINE_LIMIT {
+                            let split = match std::str::from_utf8(&line) {
+                                Err(error) if error.error_len().is_none() => error.valid_up_to(),
+                                _ => line.len(),
+                            };
+                            log_child_line(id, &line[..split]);
+                            line.drain(..split);
+                        }
+                    }
+                }
+            }
+            Err(error) => {
+                log::warn!(target: "herdr_events", "[herdr] Bridge #{id} hc stderr read failed: {error}");
+                break;
+            }
+        }
+    }
+    if !line.is_empty() {
+        log_child_line(id, &line);
+    }
+}
+
+fn log_child_line(id: u64, bytes: &[u8]) {
+    let line = String::from_utf8_lossy(bytes);
+    log::info!(target: "herdr_events", "[herdr] Bridge #{id} hc: {}", line.trim_end_matches('\r'));
+}
 
 pub(super) async fn bridge(
     mut socket: TcpStream,
@@ -23,6 +64,7 @@ pub(super) async fn bridge(
     mut stop: watch::Receiver<bool>,
 ) -> (Result<()>, Result<()>) {
     let mut child = None;
+    let mut stderr_task = None;
     let mut reason = "handshake or setup failed";
     let result = async {
         socket.set_nodelay(true)?;
@@ -49,12 +91,14 @@ pub(super) async fn bridge(
                 .args(["connect", "--session", &session])
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
+                .stderr(Stdio::piped())
                 .spawn()?,
         );
         let child = child.as_mut().expect("hc was just spawned");
         let mut input = child.stdin.take().context("Missing hc stdin")?;
         let mut output = child.stdout.take().context("Missing hc stdout")?;
+        let stderr = child.stderr.take().context("Missing hc stderr")?;
+        stderr_task = Some(tokio::spawn(log_child_stderr(stderr, activity.id())));
         tokio::select! {
             biased;
             result = stopped(&mut stop) => {
@@ -111,6 +155,7 @@ pub(super) async fn bridge(
     }
     .await;
     activity.set_stage("cleanup");
+    let cleanup_deadline = tokio::time::Instant::now() + BRIDGE_CLEANUP_TIMEOUT;
     let cleanup = if let Some(mut child) = child {
         match child.try_wait() {
             Ok(Some(_)) => Ok(()),
@@ -118,7 +163,7 @@ pub(super) async fn bridge(
                 let kill = child
                     .start_kill()
                     .context("Failed to stop hc bridge process");
-                let wait = timeout(BRIDGE_CLEANUP_TIMEOUT, child.wait())
+                let wait = tokio::time::timeout_at(cleanup_deadline, child.wait())
                     .await
                     .context("Timed out waiting for hc bridge process to exit")
                     .and_then(|result| result.context("Failed to reap hc bridge process"));
@@ -139,7 +184,19 @@ pub(super) async fn bridge(
     } else {
         Ok(())
     };
-    eprintln!(
+    if let Some(mut task) = stderr_task {
+        if tokio::time::timeout_at(cleanup_deadline, &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+            log::warn!(target: "herdr_events",
+                "[herdr] Bridge #{} hc stderr drain timed out",
+                activity.id()
+            );
+        }
+    }
+    log::info!(target: "herdr_events",
         "[herdr] Bridge #{} closed: reason={reason}; age={}s; result={}; cleanup={}",
         activity.id(),
         activity.age().as_secs(),

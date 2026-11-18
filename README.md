@@ -70,6 +70,8 @@ The guard retries the Dev Tunnels host after exits, known failures, or readiness
 
 Each bridge connection occupies a slot for its handshake, forwarding, and cleanup. The default limit is 128; change it with `--max-bridge-connections` (1–4096). Increasing it allows more `hc` processes and resource usage; it does not resolve connections that remain open indefinitely. On rejection, the server logs the number of bridges in each phase and the age of the oldest. Accepted and closed bridges have an ID, lifetime, and closure reason; these logs do not include traffic contents. Existing saved profiles without this setting retain the previous limit of 32 on reconnect. For a managed server, stop the profile before restarting it with a different limit or the new default.
 
+Server event logs, including forwarded tunnel output and bridge `hc` stderr, use UTC timestamps with millisecond precision. The timestamp is when the line was logged; partial `hc` stderr is logged when the line completes or the child closes its output. `hc` stderr lines over 64 KiB are split. Logs may contain sensitive information, and `server.log` is truncated when a managed server starts.
+
 For attached troubleshooting, use `hd server start --foreground --tunnel agent-host` and stop it with Ctrl+C. Foreground servers are not controlled by `status` or `stop`. Stopping a server closes bridge connections and the tunnel host, but does not intentionally stop the persistent `hc` core or agent terminals and does not delete the tunnel.
 
 ## Client

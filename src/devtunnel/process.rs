@@ -51,7 +51,7 @@ impl Tunnel {
                         Ok(bytes) => {
                             let text = String::from_utf8_lossy(&bytes);
                             let line = ansi.replace_all(text.trim_end(), "").into_owned();
-                            eprintln!("[herdr] {line}");
+                            log::info!(target: "herdr_events", "[herdr] {line}");
                             if sender.send(line).await.is_err() {
                                 break;
                             }
@@ -140,7 +140,7 @@ pub(crate) async fn prepare_tunnel(c: &mut Connection) -> Result<()> {
         args.push("--json");
         let created: Value = serde_json::from_str(&output(&dt, &args, c.timeout).await?)?;
         c.tunnel = tunnel_id(&created, &c.tunnel);
-        eprintln!(
+        log::info!(target: "herdr_events",
             "[herdr] Created private tunnel {}; it remains after exit",
             c.tunnel
         );
@@ -159,9 +159,10 @@ pub(crate) async fn prepare_tunnel(c: &mut Connection) -> Result<()> {
         );
     }
     if !validate_private_tunnel(c, &dt, &detail).await? {
-        eprintln!(
+        log::info!(target: "herdr_events",
             "[herdr] Adding port {} to private tunnel {}",
-            c.port, c.tunnel
+            c.port,
+            c.tunnel
         );
         output(
             &dt,

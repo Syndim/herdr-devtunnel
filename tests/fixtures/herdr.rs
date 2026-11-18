@@ -387,6 +387,16 @@ fn main() {
                 output.flush().unwrap();
             }
             eprintln!("fixture hc diagnostic");
+            if root.join("timestamp-log-output").exists() {
+                let mut stderr = std::io::stderr().lock();
+                stderr
+                    .write_all(b"fixture hc first\nfixture hc second\nfixture hc par")
+                    .unwrap();
+                stderr.flush().unwrap();
+                thread::sleep(Duration::from_millis(50));
+                stderr.write_all(b"tial").unwrap();
+                stderr.flush().unwrap();
+            }
             if std::env::var_os("HERDR_TEST_FIXTURE_HANG_AFTER_EOF").is_some() {
                 loop {
                     thread::sleep(Duration::from_secs(1));
@@ -438,6 +448,17 @@ fn main() {
             publish(&root, "host-pid", &pid);
             publish(&root, "host-attempts", &attempt.to_string());
             let mode = std::env::var("HERDR_TEST_FIXTURE_HOST_MODE").unwrap_or_default();
+            if root.join("timestamp-log-output").exists() {
+                let mut stdout = std::io::stdout().lock();
+                stdout
+                    .write_all(b"fixture tunnel first\nfixture tunnel second\nfixture tunnel par")
+                    .unwrap();
+                stdout.flush().unwrap();
+                thread::sleep(Duration::from_millis(50));
+                stdout.write_all(b"tial\n").unwrap();
+                stdout.flush().unwrap();
+                eprintln!("fixture tunnel stderr");
+            }
             if mode != "never-ready" && !(mode == "no-ready-once" && attempt == 1) {
                 println!("Ready to accept connections for tunnel: fixture.{cluster}");
                 std::io::stdout().flush().unwrap();

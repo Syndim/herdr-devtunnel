@@ -2203,6 +2203,77 @@ fn reconnect_requires_all_and_reports_empty_scopes() {
 }
 
 #[test]
+fn managed_server_log_timestamps_app_tunnel_and_hc_lines() {
+    let fixture = Fixture::new();
+    fs::write(fixture.root.join("timestamp-log-output"), "").unwrap();
+    success(
+        &fixture
+            .connection("server")
+            .env("RUST_LOG", "herdr_events=off/doesnotmatch")
+            .output()
+            .unwrap(),
+    );
+
+    let mut socket = open_bridge(&fixture);
+    socket.get_mut().shutdown(Shutdown::Write).unwrap();
+    let mut remaining = Vec::new();
+    socket.read_to_end(&mut remaining).unwrap();
+    drop(socket);
+
+    let log_path = fixture
+        .root
+        .join(".herdr-devtunnel/server-default/server.log");
+    wait_until(|| fs::read_to_string(&log_path).is_ok_and(|log| log.contains("Bridge #1 closed")));
+    success(&fixture.command("stop").output().unwrap());
+    let log = fs::read_to_string(&log_path).unwrap();
+    let timestamp = regex::Regex::new(
+        r"^\[\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d\.\d{3}Z\] ",
+    )
+    .unwrap();
+    for line in log.lines() {
+        assert!(
+            timestamp.is_match(line),
+            "missing UTC millisecond timestamp: {line:?}\n{log}"
+        );
+    }
+    for expected in [
+        "Bridge listening on",
+        "Ready to accept connections for tunnel:",
+        "CLIENT COMMAND:",
+        "Bridge #1 accepted",
+        "Bridge #1 closed",
+        "fixture tunnel first",
+        "fixture tunnel second",
+        "fixture tunnel partial",
+        "fixture tunnel stderr",
+        "fixture hc diagnostic",
+        "fixture hc first",
+        "fixture hc second",
+        "fixture hc partial",
+    ] {
+        assert!(
+            log.lines().any(|line| line.contains(expected)),
+            "missing {expected:?} in log:\n{log}"
+        );
+    }
+    for expected in [
+        "fixture tunnel first",
+        "fixture tunnel second",
+        "fixture tunnel partial",
+        "fixture tunnel stderr",
+        "fixture hc diagnostic",
+        "fixture hc first",
+        "fixture hc second",
+        "fixture hc partial",
+    ] {
+        assert!(
+            log.lines().any(|line| line.ends_with(expected)),
+            "missing complete line {expected:?} in log:\n{log}"
+        );
+    }
+}
+
+#[test]
 fn managed_server_recovers_only_the_tunnel_and_obeys_restart_budget() {
     let fixture = Fixture::new();
     let launch = || {
@@ -2371,6 +2442,18 @@ fn managed_server_handles_readiness_timeout_and_stop_during_cooldown() {
     assert!(!failed.status.success());
     final_host.wait_for_exit();
     assert!(String::from_utf8_lossy(&failed.stderr).contains("exited during startup"));
+    let log_path = fixture
+        .root
+        .join(".herdr-devtunnel/server-default/server.log");
+    let log = fs::read_to_string(log_path).unwrap();
+    let timestamp =
+        regex::Regex::new(r"^\[\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z\] ").unwrap();
+    assert!(log.lines().all(|line| timestamp.is_match(line)), "{log}");
+    assert!(
+        log.lines()
+            .any(|line| line.contains("Error:") && line.contains("readiness timed out")),
+        "{log}"
+    );
     assert_eq!(fixture.state()["ready"], false);
     assert!(
         fixture.state()["message"]
