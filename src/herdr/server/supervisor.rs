@@ -98,6 +98,7 @@ pub(crate) async fn serve(args: ServerArgs, reporter: &Reporter) -> Result<()> {
         hc,
         c.session,
         usize::from(args.max_bridge_connections),
+        Duration::from_secs(args.bridge_write_timeout),
         stop.clone(),
         receiver,
     );
@@ -123,6 +124,7 @@ async fn accept_connections(
     hc: PathBuf,
     session: String,
     limit: usize,
+    write_timeout: Duration,
     stop: watch::Sender<bool>,
     mut receiver: watch::Receiver<bool>,
 ) -> Result<()> {
@@ -154,7 +156,7 @@ async fn accept_connections(
                         log::info!(target: "herdr_events", "[herdr] Bridge #{} accepted", activity.id());
                         connections.spawn(async move {
                             let _permit = permit;
-                            let (result, cleanup) = bridge(socket, hc, session, &activity, receiver).await;
+                            let (result, cleanup) = bridge(socket, hc, session, &activity, receiver, write_timeout).await;
                             match (result, cleanup) {
                                 (Err(error), Err(cleanup)) => {
                                     Err(cleanup.context(format!("Bridge #{} failed: {error:#}", activity.id())))

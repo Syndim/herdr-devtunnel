@@ -13,6 +13,24 @@ fn legacy_max_bridge_connections() -> u16 {
     32
 }
 
+const MAX_BRIDGE_WRITE_TIMEOUT: u64 = 86_400;
+
+fn default_bridge_write_timeout() -> u64 {
+    120
+}
+
+fn deserialize_bridge_write_timeout<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<u64, D::Error> {
+    let value = u64::deserialize(deserializer)?;
+    if value > MAX_BRIDGE_WRITE_TIMEOUT {
+        return Err(serde::de::Error::custom(
+            "bridge write timeout must be at most 86400 seconds",
+        ));
+    }
+    Ok(value)
+}
+
 fn deserialize_max_bridge_connections<'de, D: serde::Deserializer<'de>>(
     deserializer: D,
 ) -> Result<u16, D::Error> {
@@ -96,6 +114,9 @@ pub(crate) struct ServerArgs {
         deserialize_with = "deserialize_max_bridge_connections"
     )]
     pub(crate) max_bridge_connections: u16,
+    #[arg(long, default_value_t = default_bridge_write_timeout(), value_parser = clap::value_parser!(u64).range(0..=MAX_BRIDGE_WRITE_TIMEOUT), help = "Seconds without write progress in either bridge direction (0 = disabled)")]
+    #[serde(default, deserialize_with = "deserialize_bridge_write_timeout")]
+    pub(crate) bridge_write_timeout: u64,
     /// Additional case-insensitive failure regex (repeatable).
     #[arg(long = "pattern", value_name = "REGEX")]
     pub(crate) patterns: Vec<String>,
@@ -127,4 +148,72 @@ pub(crate) struct TunnelArgs {
     pub(crate) tunnel: String,
     #[arg(long)]
     pub(crate) devtunnel: PathBuf,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestServer {
+        #[command(flatten)]
+        server: ServerArgs,
+    }
+
+    #[test]
+    fn bridge_write_timeout_cli_and_legacy_config() {
+        let parse = |extra: &[&str]| {
+            let mut args = vec!["test", "--tunnel", "box"];
+            args.extend_from_slice(extra);
+            TestServer::try_parse_from(args)
+        };
+        let server = parse(&[]).unwrap().server;
+        assert_eq!(server.bridge_write_timeout, 120);
+        assert_eq!(
+            parse(&["--bridge-write-timeout", "0"])
+                .unwrap()
+                .server
+                .bridge_write_timeout,
+            0
+        );
+        assert_eq!(
+            parse(&["--bridge-write-timeout", "7"])
+                .unwrap()
+                .server
+                .bridge_write_timeout,
+            7
+        );
+        assert!(parse(&["--bridge-write-timeout", "-1"]).is_err());
+        assert!(parse(&["--bridge-write-timeout", "invalid"]).is_err());
+        assert_eq!(
+            parse(&["--bridge-write-timeout", "86400"])
+                .unwrap()
+                .server
+                .bridge_write_timeout,
+            MAX_BRIDGE_WRITE_TIMEOUT
+        );
+        assert!(parse(&["--bridge-write-timeout", "86401"]).is_err());
+
+        let mut config = serde_json::to_value(server).unwrap();
+        assert_eq!(config["bridge_write_timeout"], 120);
+        config
+            .as_object_mut()
+            .unwrap()
+            .remove("bridge_write_timeout");
+        let restored: ServerArgs = serde_json::from_value(config.clone()).unwrap();
+        assert_eq!(restored.bridge_write_timeout, 0);
+        config["bridge_write_timeout"] = (MAX_BRIDGE_WRITE_TIMEOUT + 1).into();
+        assert!(serde_json::from_value::<ServerArgs>(config.clone()).is_err());
+        config["bridge_write_timeout"] = MAX_BRIDGE_WRITE_TIMEOUT.into();
+        assert_eq!(
+            serde_json::from_value::<ServerArgs>(config.clone())
+                .unwrap()
+                .bridge_write_timeout,
+            MAX_BRIDGE_WRITE_TIMEOUT
+        );
+        config["bridge_write_timeout"] = 0.into();
+        let restored: ServerArgs = serde_json::from_value(config).unwrap();
+        assert_eq!(restored.bridge_write_timeout, 0);
+    }
 }
