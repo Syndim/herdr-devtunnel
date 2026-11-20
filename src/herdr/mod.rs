@@ -158,7 +158,6 @@ mod tests {
     #[test]
     fn cli_requires_explicit_target_and_valid_identifiers() {
         for args in [
-            vec!["hd", "server", "start"],
             vec!["hd", "client", "connect", "--tunnel", "box.use2"],
             vec![
                 "hd", "server", "start", "--tunnel", "box.use2", "--port", "0",

@@ -2,7 +2,7 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 
 use crate::herdr::config::{
-    ClientArgs, ConnectArgs, DoctorArgs, ServerArgs, SetupArgs, TunnelArgs,
+    ClientArgs, ConnectArgs, DoctorArgs, ServerStartArgs, SetupArgs, TunnelArgs,
 };
 
 #[derive(Parser)]
@@ -59,7 +59,7 @@ pub(crate) enum ClientCommands {
 #[derive(Subcommand)]
 pub(crate) enum ServerCommands {
     /// Create or reuse a private tunnel and start a guarded bridge.
-    Start(ServerArgs),
+    Start(ServerStartArgs),
     /// Stop only the named managed bridge and its tunnel host, not hc/agents.
     Stop(crate::background::SessionArgs),
     /// Show whether a managed server is running and its tunnel is ready.
@@ -81,13 +81,15 @@ impl Commands {
                 Self::Setup(args) => crate::diagnostics::setup(args).await,
                 Self::Server {
                     command: ServerCommands::Start(args),
-                } if args.foreground => {
-                    crate::herdr::server::serve(args, &crate::background::Reporter::foreground())
-                        .await
+                } => {
+                    let args = args.resolve()?;
+                    if args.foreground {
+                        let reporter = crate::background::Reporter::foreground(args.name.clone());
+                        crate::herdr::server::serve(args, &reporter).await
+                    } else {
+                        crate::background::start(args)
+                    }
                 }
-                Self::Server {
-                    command: ServerCommands::Start(args),
-                } => crate::background::start(args),
                 Self::Server {
                     command: ServerCommands::Stop(args),
                 } => crate::background::stop(args),

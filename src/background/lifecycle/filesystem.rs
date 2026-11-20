@@ -145,11 +145,15 @@ pub(crate) fn create_directory(directory: &Path) -> Result<()> {
     let runtime = directory
         .parent()
         .context("Missing guard runtime directory")?;
+    create_runtime_directory(runtime)?;
+    create_managed_directory(directory, false)
+}
+
+pub(crate) fn create_runtime_directory(runtime: &Path) -> Result<()> {
     let home = runtime.parent().context("Missing home directory")?;
     #[cfg(unix)]
     validate_home(home)?;
     #[cfg(not(unix))]
     let _ = home;
-    create_managed_directory(runtime, true)?;
-    create_managed_directory(directory, false)
+    create_managed_directory(runtime, true)
 }

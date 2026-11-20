@@ -12,7 +12,7 @@ use crate::herdr::validation::{executable, parse_machine};
 
 use super::SessionArgs;
 use super::lifecycle;
-use super::state::{State, directory, read_state, runtime_directory};
+use super::state::{StartDefaults, State, directory, read_state, runtime_directory};
 
 pub(crate) fn start(mut args: ServerArgs) -> Result<()> {
     build_failure_matchers(&args.patterns)?;
@@ -22,7 +22,7 @@ pub(crate) fn start(mut args: ServerArgs) -> Result<()> {
         executable(&args.connection.tools.devtunnel)?.canonicalize()?;
     let directory = directory(&args.name)?;
     let management = lifecycle::management_lock(&directory)?;
-    start_locked(args, &directory, management)
+    start_locked(args, &directory, management, true)
 }
 
 pub(crate) fn startup_timeout(timeout: u64, cooldown: u64, max_restarts: u32) -> Duration {
@@ -36,11 +36,23 @@ pub(crate) fn startup_timeout(timeout: u64, cooldown: u64, max_restarts: u32) ->
     Duration::from_secs(seconds)
 }
 
-fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Result<()> {
+fn start_locked(
+    args: ServerArgs,
+    directory: &Path,
+    management: fs::File,
+    remember: bool,
+) -> Result<()> {
     if lifecycle::running(directory)? {
-        let configured: ServerArgs =
+        let mut configured: ServerArgs =
             serde_json::from_slice(&fs::read(directory.join("config.json"))?)
                 .context("Invalid running Herdr configuration")?;
+        let state = read_state(directory)?;
+        if state
+            .as_ref()
+            .is_some_and(|state| state.tunnel == args.connection.tunnel)
+        {
+            configured.connection.tunnel = args.connection.tunnel.clone();
+        }
         ensure!(
             configured == args,
             "Server '{}' is running with different settings; stop it explicitly before reconfiguring",
@@ -54,7 +66,6 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
             args.name,
             directory.join("server.log").display()
         );
-        let state = read_state(directory)?;
         let Some(state) = state.filter(|state| state.ready) else {
             bail!(
                 "Server '{}' is running but not ready (it may still be starting or recovering). It remains active and may retry in the background. Check `hd server status --name {}` and retry `server start` when ready, or request shutdown with `hd server stop --name {}`. See {}",
@@ -64,6 +75,9 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
                 directory.join("server.log").display()
             );
         };
+        if remember {
+            StartDefaults::save(&args.name, &state.tunnel, state.port);
+        }
         println!(
             "Server '{}' is already running; leaving it unchanged.",
             args.name
@@ -114,6 +128,9 @@ fn start_locked(args: ServerArgs, directory: &Path, management: fs::File) -> Res
             && state.pid == child.id()
             && lifecycle::running(directory)?
         {
+            if state.ready && remember {
+                StartDefaults::save(&args.name, &state.tunnel, state.port);
+            }
             drop(management.take());
             if state.ready {
                 println!(
@@ -259,7 +276,7 @@ pub(crate) fn reconnect_all() -> Result<()> {
             build_failure_matchers(&args.patterns)?;
             println!("Reconnecting server '{name}'...");
             stop_in_directory(&name, &directory)?;
-            start_locked(args, &directory, management)
+            start_locked(args, &directory, management, false)
         })();
         if let Err(error) = result {
             eprintln!("[herdr] Server '{name}': {error:#}");
