@@ -302,6 +302,23 @@ fn main() {
                 std::io::stdout().write_all(b"remote-closed").unwrap();
                 return;
             }
+            if std::env::var_os("HERDR_TEST_FIXTURE_BLOCK_FIRST_STDIN").is_some() && attempt == 1 {
+                loop {
+                    thread::park();
+                }
+            }
+            if std::env::var_os("HERDR_TEST_FIXTURE_FLOOD_STDOUT").is_some() {
+                let root = root.clone();
+                thread::spawn(move || {
+                    while !root.join(format!("hc-flood-{attempt}")).exists() {
+                        thread::sleep(Duration::from_millis(10));
+                    }
+                    publish(&root, &format!("hc-flood-{attempt}-started"), "");
+                    let mut output = std::io::stdout().lock();
+                    let bytes = [b'x'; 64 * 1024];
+                    while output.write_all(&bytes).is_ok() {}
+                });
+            }
 
             fn api(root: &std::path::Path, args: &[String]) {
                 // The fixture is compiled with rustc alone, so keep its JSON protocol
@@ -376,13 +393,13 @@ fn main() {
                 }
             }
             let mut input = std::io::stdin().lock();
-            let mut output = std::io::stdout().lock();
             let mut buffer = [0; 8192];
             loop {
                 let count = input.read(&mut buffer).unwrap();
                 if count == 0 {
                     break;
                 }
+                let mut output = std::io::stdout().lock();
                 output.write_all(&buffer[..count]).unwrap();
                 output.flush().unwrap();
             }

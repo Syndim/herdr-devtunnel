@@ -95,6 +95,7 @@ impl Fixture {
             "HERDR_TEST_FIXTURE_SHARED",
             "HERDR_TEST_FIXTURE_CREATED_CLUSTER",
             "HERDR_TEST_FIXTURE_EARLY_CLOSE",
+            "HERDR_TEST_FIXTURE_FLOOD_STDOUT",
             "HERDR_TEST_FIXTURE_HANG_AFTER_EOF",
             "HERDR_TEST_FIXTURE_HC_GUARD",
             "HERDR_TEST_FIXTURE_HOST_MODE",
@@ -1707,6 +1708,192 @@ fn max_bridge_connections_limits_foreground_server_and_releases_slots() {
 }
 
 #[test]
+fn stalled_bridge_output_is_closed_and_releases_its_permit() {
+    let fixture = Fixture::new();
+    let guard = HcGuard(fixture.root.join("hc-guard"));
+    fs::write(&guard.0, b"").unwrap();
+    let mut command = fixture.foreground_server();
+    command
+        .args([
+            "--max-bridge-connections",
+            "2",
+            "--bridge-write-timeout",
+            "2",
+        ])
+        .env("HERDR_TEST_FIXTURE_FLOOD_STDOUT", "1")
+        .env("HERDR_TEST_FIXTURE_HC_GUARD", "1");
+    let mut server = Running::start(command);
+    server.ready();
+
+    let mut healthy = open_bridge(&fixture);
+    let mut stalled = open_bridge(&fixture);
+    let healthy_process = fixture_identity(&fixture.root.join("hc-connection-1/pid"));
+    let stalled_process = fixture_identity(&fixture.root.join("hc-connection-2/pid"));
+
+    thread::sleep(Duration::from_secs(3));
+    for socket in [&mut healthy, &mut stalled] {
+        socket.get_mut().write_all(b"awake").unwrap();
+        let mut echo = [0; 5];
+        socket.read_exact(&mut echo).unwrap();
+        assert_eq!(&echo, b"awake");
+    }
+    assert!(stalled_process.is_alive());
+
+    fs::write(fixture.root.join("hc-flood-2"), b"").unwrap();
+    wait_until(|| fixture.root.join("hc-flood-2-started").exists());
+    stalled_process.wait_for_exit();
+    wait_until(|| {
+        server
+            .log
+            .lock()
+            .unwrap()
+            .contains("Bridge #2 closed: reason=hc output write timed out;")
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut received = 0usize;
+    let mut bytes = [0; 65536];
+    loop {
+        assert!(Instant::now() < deadline, "stalled socket did not close");
+        match stalled.read(&mut bytes) {
+            Ok(0) => break,
+            Ok(count) => {
+                assert!(bytes[..count].iter().all(|byte| *byte == b'x'));
+                received += count;
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                break;
+            }
+            Err(error) => panic!("draining stalled socket: {error}"),
+        }
+    }
+    assert!(received >= 65536, "fixture did not produce abundant output");
+
+    let mut replacement = wait_for_replacement_bridge(&fixture);
+    let replacement_process = fixture_identity(&fixture.root.join("hc-connection-3/pid"));
+    assert!(healthy_process.is_alive());
+    healthy.get_mut().write_all(b"still alive").unwrap();
+    let mut echo = [0; 11];
+    healthy.read_exact(&mut echo).unwrap();
+    assert_eq!(&echo, b"still alive");
+    for socket in [&mut healthy, &mut replacement] {
+        socket.get_mut().shutdown(Shutdown::Write).unwrap();
+        let mut trailing = Vec::new();
+        socket.read_to_end(&mut trailing).unwrap();
+        assert!(trailing.is_empty());
+    }
+    healthy_process.wait_for_exit();
+    replacement_process.wait_for_exit();
+}
+
+fn wait_for_replacement_bridge(fixture: &Fixture) -> BufReader<TcpStream> {
+    let mut replacement = None;
+    wait_until(|| {
+        let mut socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+        socket
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .unwrap();
+        if let Err(error) = socket
+            .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\nprobe")
+        {
+            assert!(matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset
+                    | std::io::ErrorKind::ConnectionAborted
+                    | std::io::ErrorKind::BrokenPipe
+            ));
+            return false;
+        }
+        let mut socket = BufReader::new(socket);
+        let mut hello = String::new();
+        match socket.read_line(&mut hello) {
+            Ok(0) => return false,
+            Ok(_) => {}
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::ConnectionAborted
+                ) =>
+            {
+                return false;
+            }
+            Err(error) => panic!("replacement handshake: {error}"),
+        }
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&hello).unwrap()["ok"],
+            true
+        );
+        let mut probe = [0; 5];
+        socket.read_exact(&mut probe).unwrap();
+        assert_eq!(&probe, b"probe");
+        replacement = Some(socket);
+        true
+    });
+    replacement.unwrap()
+}
+
+#[test]
+fn stalled_bridge_input_is_closed_and_releases_its_permit() {
+    let fixture = Fixture::new();
+    let guard = HcGuard(fixture.root.join("hc-guard"));
+    fs::write(&guard.0, b"").unwrap();
+    let mut command = fixture.foreground_server();
+    command
+        .args([
+            "--max-bridge-connections",
+            "1",
+            "--bridge-write-timeout",
+            "3",
+        ])
+        .env("HERDR_TEST_FIXTURE_BLOCK_FIRST_STDIN", "1")
+        .env("HERDR_TEST_FIXTURE_HC_GUARD", "1");
+    let mut server = Running::start(command);
+    server.ready();
+
+    let mut socket = TcpStream::connect(("127.0.0.1", fixture.port)).unwrap();
+    socket
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .unwrap();
+    socket
+        .write_all(b"{\"protocol\":\"syndim/herdr-devtunnel/v1\",\"session\":\"work\"}\n")
+        .unwrap();
+    let mut stalled = BufReader::new(socket);
+    let mut hello = String::new();
+    stalled.read_line(&mut hello).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&hello).unwrap()["ok"],
+        true
+    );
+    let process = fixture_identity(&fixture.root.join("hc-connection-1/pid"));
+    let socket = stalled.get_mut();
+    socket
+        .set_write_timeout(Some(Duration::from_secs(1)))
+        .unwrap();
+    if let Err(error) = socket.write_all(&vec![b'x'; 1024 * 1024]) {
+        assert!(matches!(
+            error.kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
+        ));
+    }
+    socket.shutdown(Shutdown::Write).unwrap();
+    process.wait_for_exit();
+    wait_until(|| {
+        server
+            .log
+            .lock()
+            .unwrap()
+            .contains("Bridge #1 closed: reason=hc input write timed out;")
+    });
+
+    let _replacement = wait_for_replacement_bridge(&fixture);
+}
+
+#[test]
 fn bridge_limit_diagnostics_report_pending_handshakes() {
     let fixture = Fixture::new();
     let mut command = fixture.foreground_server();
@@ -1988,6 +2175,60 @@ fn reconnected_names(fixture: &Fixture) -> Vec<String> {
         .filter(|request| request["method"] == "machine.connect")
         .map(|request| request["params"]["machine"].as_str().unwrap().to_string())
         .collect()
+}
+
+#[test]
+fn legacy_bridge_write_timeout_is_disabled_until_stopped_and_started() {
+    let fixture = Fixture::new();
+    success(
+        &fixture
+            .connection("server")
+            .args(["--bridge-write-timeout", "0"])
+            .output()
+            .unwrap(),
+    );
+    let config_path = fixture
+        .root
+        .join(".herdr-devtunnel/server-default/config.json");
+    let mut config: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(config["bridge_write_timeout"], 0);
+    config
+        .as_object_mut()
+        .unwrap()
+        .remove("bridge_write_timeout")
+        .unwrap();
+    fs::write(&config_path, serde_json::to_vec_pretty(&config).unwrap()).unwrap();
+    let old_worker = fixture.state()["pid"].as_u64().unwrap();
+
+    let conflicting = fixture.connection("server").output().unwrap();
+    assert!(!conflicting.status.success());
+    assert!(String::from_utf8_lossy(&conflicting.stderr).contains("different settings"));
+    assert_eq!(fixture.state()["pid"].as_u64(), Some(old_worker));
+    success(
+        &fixture
+            .connection("server")
+            .args(["--bridge-write-timeout", "0"])
+            .output()
+            .unwrap(),
+    );
+
+    success(
+        &fixture
+            .command("reconnect")
+            .args(["--all", "--role", "server"])
+            .output()
+            .unwrap(),
+    );
+    let restored: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(restored["bridge_write_timeout"], 0);
+
+    success(&fixture.command("stop").output().unwrap());
+    success(&fixture.connection("server").output().unwrap());
+    let restarted: serde_json::Value =
+        serde_json::from_slice(&fs::read(&config_path).unwrap()).unwrap();
+    assert_eq!(restarted["bridge_write_timeout"], 120);
 }
 
 #[test]
