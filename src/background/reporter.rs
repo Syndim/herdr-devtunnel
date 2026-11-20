@@ -1,18 +1,30 @@
 use std::path::PathBuf;
+use std::sync::Once;
 use std::time::Duration;
 
-use super::state::{State, read_state, write_state};
+use super::state::{StartDefaults, State, read_state, write_state};
 use crate::herdr::config::Connection;
 use anyhow::Context;
 use anyhow::Result;
 
 pub(crate) struct Reporter {
-    pub(crate) directory: Option<PathBuf>,
+    directory: Option<PathBuf>,
+    foreground: Option<(String, Once)>,
 }
 
 impl Reporter {
-    pub(crate) fn foreground() -> Self {
-        Self { directory: None }
+    pub(crate) fn foreground(name: String) -> Self {
+        Self {
+            directory: None,
+            foreground: Some((name, Once::new())),
+        }
+    }
+
+    pub(super) fn managed(directory: PathBuf) -> Self {
+        Self {
+            directory: Some(directory),
+            foreground: None,
+        }
     }
 
     pub(crate) fn update(
@@ -35,6 +47,8 @@ impl Reporter {
                     message: message.into(),
                 },
             )?;
+        } else if ready && let Some((name, once)) = &self.foreground {
+            once.call_once(|| StartDefaults::save(name, &c.tunnel, c.port));
         }
         Ok(())
     }

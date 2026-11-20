@@ -584,6 +584,96 @@ fn server_status_selects_managed_profile_and_validates_name() {
 }
 
 #[test]
+fn managed_server_start_reuses_last_inputs_and_prefers_explicit_flags() {
+    let mut fixture = Fixture::new();
+    if fixture.port == 43821 {
+        fixture.port = allocate_port();
+    }
+    let port = fixture.port.to_string();
+    let start = || {
+        let mut command = fixture.command("server");
+        command.args(["--timeout", "5"]);
+        command
+    };
+    let stop = |name: &str| {
+        success(
+            &fixture
+                .command("stop")
+                .args(["--name", name])
+                .output()
+                .unwrap(),
+        );
+    };
+    let ready_pid = |name: &str, tunnel: &str, port: u16| {
+        let path = fixture
+            .root
+            .join(".herdr-devtunnel")
+            .join(format!("server-{name}"))
+            .join("state.json");
+        let state: serde_json::Value = serde_json::from_slice(&fs::read(path).unwrap()).unwrap();
+        assert_eq!(state["ready"], true, "{state}");
+        assert_eq!(state["tunnel"], tunnel, "{state}");
+        assert_eq!(state["port"], port, "{state}");
+        state["pid"].as_u64().unwrap()
+    };
+
+    let missing = start().output().unwrap();
+    assert!(!missing.status.success());
+    let stderr = String::from_utf8_lossy(&missing.stderr);
+    assert!(stderr.contains("--tunnel"), "{stderr}");
+
+    success(
+        &start()
+            .args(["--tunnel", "fixture", "--name", "WorkBox", "--port", &port])
+            .output()
+            .unwrap(),
+    );
+    let first_pid = ready_pid("workbox", "fixture.use2", fixture.port);
+
+    for subcommand in ["status", "stop"] {
+        let output = fixture.command(subcommand).output().unwrap();
+        success(&output);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("Server 'default' is not running."),
+            "{stdout}"
+        );
+    }
+    success(&start().output().unwrap());
+    assert_eq!(
+        ready_pid("workbox", "fixture.use2", fixture.port),
+        first_pid
+    );
+
+    stop("workbox");
+    success(&start().output().unwrap());
+    ready_pid("workbox", "fixture.use2", fixture.port);
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("host-attempts")).unwrap(),
+        "2"
+    );
+
+    stop("workbox");
+    success(&start().args(["--name", "NextBox"]).output().unwrap());
+    let next_pid = ready_pid("nextbox", "fixture.use2", fixture.port);
+    success(&start().output().unwrap());
+    assert_eq!(ready_pid("nextbox", "fixture.use2", fixture.port), next_pid);
+    stop("nextbox");
+
+    let other_port = allocate_port();
+    let other_port_arg = other_port.to_string();
+    fs::write(fixture.root.join("tunnel-cluster"), "inc1").unwrap();
+    success(
+        &start()
+            .env("HERDR_TEST_FIXTURE_PORT", &other_port_arg)
+            .args(["--tunnel", "fixture.inc1", "--port", &other_port_arg])
+            .output()
+            .unwrap(),
+    );
+    ready_pid("nextbox", "fixture.inc1", other_port);
+}
+
+#[test]
 fn internal_commands_keep_their_runtime_guards_and_lifetime() {
     let fixture = Fixture::new();
     {

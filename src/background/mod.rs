@@ -10,6 +10,7 @@ use std::path::PathBuf;
 
 pub(crate) use profile::{reconnect_all, start, status, stop};
 pub(crate) use reporter::Reporter;
+pub(crate) use state::StartDefaults;
 pub(crate) use worker::worker;
 
 #[derive(Args)]
@@ -65,9 +66,7 @@ mod tests {
                     assert!(started.elapsed() < Duration::from_secs(10));
                     thread::sleep(Duration::from_millis(10));
                 }
-                let reporter = Reporter {
-                    directory: Some(worker_directory.clone()),
-                };
+                let reporter = Reporter::managed(worker_directory.clone());
                 match outcome {
                     "stopped" => reporter.finish(&Ok(())).unwrap(),
                     "failed" => reporter
@@ -130,9 +129,7 @@ mod tests {
         let directory =
             std::env::temp_dir().join(format!("herdr-finish-{:032x}", rand::random::<u128>()));
         fs::create_dir(&directory).unwrap();
-        let reporter = Reporter {
-            directory: Some(directory.clone()),
-        };
+        let reporter = Reporter::managed(directory.clone());
         let result = Err(anyhow::anyhow!("child cleanup failed"));
         let status = reporter.finish(&result);
         let error = format!(

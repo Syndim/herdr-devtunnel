@@ -52,6 +52,8 @@ hd server start --tunnel agent-host
 
 Wait for successful startup and the `CLIENT COMMAND` line; use the full tunnel identifier printed there on the client. A bare name uses automatic relay selection; a name with a cluster suffix, such as `agent-host.inc1`, requests that relay when creating the tunnel. Existing tunnels are not relocated, and a mismatched relay is rejected.
 
+On the first start, only `--tunnel` is required. After a successful start, `hd server start` reuses the saved tunnel, profile name, and port for any of those flags you omit, even after stopping the server. Explicit flags override saved values. The settings are stored in `~/.herdr-devtunnel/start-defaults.json`.
+
 The server looks up the named tunnel and creates it only on a confirmed not-found response. It reuses an eligible private tunnel and adds the port if it is empty; incompatible ports or access grants are rejected. The default bridge port is `43821` and the remote `hc` session is `default`. Override them with `--port 43822 --session work`, and use the same values on the client. Use a dedicated tunnel, port, and server process for each published session.
 
 By default the server is a managed background process. Managed server commands are grouped under `server`. The former `hd status` command has moved to `hd server status`; update scripts that use it. Manage profiles independently:

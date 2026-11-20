@@ -23,9 +23,7 @@ pub(crate) async fn worker(args: WorkerArgs) -> Result<()> {
         .context("Herdr server is already running")?;
     let config: ServerArgs = serde_json::from_slice(&fs::read(args.directory.join("config.json"))?)
         .context("Invalid Herdr server configuration")?;
-    let reporter = Reporter {
-        directory: Some(args.directory),
-    };
+    let reporter = Reporter::managed(args.directory);
     reporter.update(&config.connection, false, 0, "starting")?;
     let result = serve(config, &reporter).await;
     let status = reporter.finish(&result);

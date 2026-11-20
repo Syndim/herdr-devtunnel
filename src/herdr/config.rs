@@ -1,9 +1,14 @@
 use std::path::PathBuf;
 
+use anyhow::{Result, anyhow};
 use clap::{Args, ValueEnum};
 use serde::{Deserialize, Serialize};
 
+use crate::background::StartDefaults;
+
 use super::validation::{parse_machine, parse_session, parse_tunnel};
+
+const DEFAULT_PORT: u16 = 43821;
 
 fn default_max_bridge_connections() -> u16 {
     128
@@ -81,7 +86,7 @@ pub(crate) struct Connection {
     /// Tunnel name or NAME.CLUSTER (server creation honors the relay suffix).
     #[arg(long, value_parser = parse_tunnel)]
     pub(crate) tunnel: String,
-    #[arg(long, default_value_t = 43821, value_parser = clap::value_parser!(u16).range(1..))]
+    #[arg(long, default_value_t = DEFAULT_PORT, value_parser = clap::value_parser!(u16).range(1..))]
     pub(crate) port: u16,
     #[arg(long, default_value = "default", value_parser = parse_session, help = "Server hc session (the remote session for client registration)")]
     pub(crate) session: String,
@@ -91,35 +96,117 @@ pub(crate) struct Connection {
     pub(crate) tools: Tools,
 }
 
-#[derive(Args, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct ServerArgs {
-    #[command(flatten)]
     pub(crate) connection: Connection,
-    /// Managed server profile.
-    #[arg(long, default_value = "default", value_parser = parse_machine)]
     pub(crate) name: String,
-    /// Keep the guarded server attached to this terminal instead.
-    #[arg(long)]
     pub(crate) foreground: bool,
-    /// Delay in seconds between tunnel host restarts.
-    #[arg(long, default_value_t = 2)]
     pub(crate) cooldown: u64,
-    /// Maximum tunnel host restarts before exiting (0 = unlimited).
-    #[arg(long, default_value_t = 0)]
     pub(crate) max_restarts: u32,
-    /// Maximum concurrent bridge connections, including handshakes.
-    #[arg(long, default_value_t = default_max_bridge_connections(), value_parser = clap::value_parser!(u16).range(1..=4096))]
     #[serde(
         default = "legacy_max_bridge_connections",
         deserialize_with = "deserialize_max_bridge_connections"
     )]
     pub(crate) max_bridge_connections: u16,
-    #[arg(long, default_value_t = default_bridge_write_timeout(), value_parser = clap::value_parser!(u64).range(0..=MAX_BRIDGE_WRITE_TIMEOUT), help = "Seconds without write progress in either bridge direction (0 = disabled)")]
     #[serde(default, deserialize_with = "deserialize_bridge_write_timeout")]
     pub(crate) bridge_write_timeout: u64,
-    /// Additional case-insensitive failure regex (repeatable).
-    #[arg(long = "pattern", value_name = "REGEX")]
     pub(crate) patterns: Vec<String>,
+}
+
+#[derive(Args)]
+pub(crate) struct ServerStartArgs {
+    #[arg(long, value_parser = parse_tunnel, help = "Tunnel name or NAME.CLUSTER (server creation honors the relay suffix)")]
+    tunnel: Option<String>,
+    #[arg(long, value_parser = clap::value_parser!(u16).range(1..))]
+    port: Option<u16>,
+    #[arg(long, default_value = "default", value_parser = parse_session, help = "Server hc session (the remote session for client registration)")]
+    session: String,
+    #[arg(long, default_value_t = 45, value_parser = clap::value_parser!(u64).range(1..=600))]
+    timeout: u64,
+    #[command(flatten)]
+    tools: Tools,
+    #[arg(long, value_parser = parse_machine, help = "Managed server profile")]
+    name: Option<String>,
+    #[arg(
+        long,
+        help = "Keep the guarded server attached to this terminal instead"
+    )]
+    foreground: bool,
+    #[arg(
+        long,
+        default_value_t = 2,
+        help = "Delay in seconds between tunnel host restarts"
+    )]
+    cooldown: u64,
+    #[arg(
+        long,
+        default_value_t = 0,
+        help = "Maximum tunnel host restarts before exiting (0 = unlimited)"
+    )]
+    max_restarts: u32,
+    #[arg(long, default_value_t = default_max_bridge_connections(), value_parser = clap::value_parser!(u16).range(1..=4096), help = "Maximum concurrent bridge connections, including handshakes")]
+    max_bridge_connections: u16,
+    #[arg(long, default_value_t = default_bridge_write_timeout(), value_parser = clap::value_parser!(u64).range(0..=MAX_BRIDGE_WRITE_TIMEOUT), help = "Seconds without write progress in either bridge direction (0 = disabled)")]
+    bridge_write_timeout: u64,
+    #[arg(
+        long = "pattern",
+        value_name = "REGEX",
+        help = "Additional case-insensitive failure regex (repeatable)"
+    )]
+    patterns: Vec<String>,
+}
+
+impl ServerStartArgs {
+    pub(crate) fn resolve(self) -> Result<ServerArgs> {
+        let can_start_without_storage = self.foreground && self.tunnel.is_some();
+        self.resolve_with(|| match StartDefaults::load() {
+            Err(error) if can_start_without_storage => {
+                eprintln!("[herdr] Could not load server start settings: {error:#}");
+                Ok(None)
+            }
+            result => result,
+        })
+    }
+
+    fn resolve_with(
+        self,
+        load: impl FnOnce() -> Result<Option<StartDefaults>>,
+    ) -> Result<ServerArgs> {
+        let defaults = if self.tunnel.is_none() || self.name.is_none() || self.port.is_none() {
+            load()?
+        } else {
+            None
+        };
+        let (tunnel, name, port) = match defaults {
+            Some(defaults) => (Some(defaults.tunnel), defaults.name, defaults.port),
+            None => (None, "default".into(), DEFAULT_PORT),
+        };
+        let tunnel = self.tunnel.or(tunnel).ok_or_else(|| {
+            anyhow!("--tunnel is required when no server start defaults are configured")
+        })?;
+        let tunnel =
+            parse_tunnel(&tunnel).map_err(|error| anyhow!("Invalid saved tunnel: {error}"))?;
+        let name = parse_machine(&self.name.unwrap_or(name))
+            .map_err(|error| anyhow!("Invalid saved profile name: {error}"))?;
+        let port = self.port.unwrap_or(port);
+        anyhow::ensure!(port != 0, "Invalid saved port: port must be nonzero");
+        Ok(ServerArgs {
+            connection: Connection {
+                tunnel,
+                port,
+                session: self.session,
+                timeout: self.timeout,
+                tools: self.tools,
+            },
+            name,
+            foreground: self.foreground,
+            cooldown: self.cooldown,
+            max_restarts: self.max_restarts,
+            max_bridge_connections: self.max_bridge_connections,
+            bridge_write_timeout: self.bridge_write_timeout,
+            patterns: self.patterns,
+        })
+    }
 }
 
 #[derive(Args)]
@@ -158,29 +245,102 @@ mod tests {
     #[derive(Parser)]
     struct TestServer {
         #[command(flatten)]
-        server: ServerArgs,
+        server: ServerStartArgs,
+    }
+
+    #[derive(Parser)]
+    struct TestClient {
+        #[command(flatten)]
+        client: ClientArgs,
+    }
+
+    fn parse_start(flags: &[&str]) -> Result<ServerStartArgs, clap::Error> {
+        TestServer::try_parse_from(["test"].into_iter().chain(flags.iter().copied()))
+            .map(|args| args.server)
+    }
+
+    #[test]
+    fn server_start_resolves_each_default_independently() {
+        for (flags, expected) in [
+            (&[][..], ("saved-tunnel", "saved-name", 1234)),
+            (&["--tunnel", "box"], ("box", "saved-name", 1234)),
+            (&["--name", "default"], ("saved-tunnel", "default", 1234)),
+            (&["--port", "43821"], ("saved-tunnel", "saved-name", 43821)),
+        ] {
+            let server = parse_start(flags)
+                .unwrap()
+                .resolve_with(|| {
+                    Ok(Some(StartDefaults {
+                        tunnel: "saved-tunnel".into(),
+                        name: "saved-name".into(),
+                        port: 1234,
+                    }))
+                })
+                .unwrap();
+            assert_eq!(
+                (
+                    server.connection.tunnel.as_str(),
+                    server.name.as_str(),
+                    server.connection.port
+                ),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn server_start_without_saved_defaults() {
+        let server = parse_start(&["--tunnel", "box"])
+            .unwrap()
+            .resolve_with(|| Ok(None))
+            .unwrap();
+        assert_eq!(server.connection.port, 43821);
+        assert_eq!(server.name, "default");
+        let result = parse_start(&[]).unwrap().resolve_with(|| Ok(None));
+        assert!(matches!(result, Err(error) if error.to_string().contains("--tunnel")));
+    }
+
+    #[test]
+    fn server_start_only_loads_defaults_when_a_flag_is_omitted() {
+        assert!(
+            parse_start(&["--tunnel", "box", "--name", "dev", "--port", "1234"])
+                .unwrap()
+                .resolve_with(|| panic!("defaults are not needed"))
+                .is_ok()
+        );
+        let result = parse_start(&["--tunnel", "box"])
+            .unwrap()
+            .resolve_with(|| Err(anyhow!("failed to load defaults")));
+        assert!(matches!(result, Err(error) if error.to_string() == "failed to load defaults"));
+    }
+
+    #[test]
+    fn client_still_requires_tunnel_and_name() {
+        assert!(TestClient::try_parse_from(["test", "--name", "dev"]).is_err());
+        assert!(TestClient::try_parse_from(["test", "--tunnel", "box"]).is_err());
+        let args =
+            TestClient::try_parse_from(["test", "--tunnel", "box", "--name", "dev"]).unwrap();
+        assert_eq!(args.client.connection.port, 43821);
     }
 
     #[test]
     fn bridge_write_timeout_cli_and_legacy_config() {
-        let parse = |extra: &[&str]| {
-            let mut args = vec!["test", "--tunnel", "box"];
-            args.extend_from_slice(extra);
-            TestServer::try_parse_from(args)
+        let parse = |flags: &[&str]| {
+            let mut args = vec!["--tunnel", "box"];
+            args.extend_from_slice(flags);
+            parse_start(&args)?.resolve_with(|| Ok(None))
         };
-        let server = parse(&[]).unwrap().server;
+        let server = parse(&[]).unwrap();
         assert_eq!(server.bridge_write_timeout, 120);
         assert_eq!(
             parse(&["--bridge-write-timeout", "0"])
                 .unwrap()
-                .server
                 .bridge_write_timeout,
             0
         );
         assert_eq!(
             parse(&["--bridge-write-timeout", "7"])
                 .unwrap()
-                .server
                 .bridge_write_timeout,
             7
         );
@@ -189,7 +349,6 @@ mod tests {
         assert_eq!(
             parse(&["--bridge-write-timeout", "86400"])
                 .unwrap()
-                .server
                 .bridge_write_timeout,
             MAX_BRIDGE_WRITE_TIMEOUT
         );
