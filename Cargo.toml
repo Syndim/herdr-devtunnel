@@ -1,6 +1,6 @@
 [package]
 name = "herdr-devtunnel"
-version = "0.7.1"
+version = "0.7.2"
 edition = "2024"
 rust-version = "1.89"
 description = "Connect Herdr cores through private Microsoft Dev Tunnels"
