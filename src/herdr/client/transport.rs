@@ -4,37 +4,21 @@ use crate::herdr::validation::shell_quote;
 use crate::herdr::validation::via_path;
 #[cfg(windows)]
 use crate::herdr::validation::windows_quote;
-use anyhow::{Context, Result};
-use std::path::{Path, PathBuf};
+use anyhow::Result;
 
-fn registration_executable(explicit: Option<&Path>) -> Result<PathBuf> {
-    if let Some(path) = explicit {
-        let resolved = which::which(path)
-            .with_context(|| format!("Executable not found: {}", path.display()))?;
-        #[cfg(windows)]
-        anyhow::ensure!(
-            resolved
-                .extension()
-                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe")),
-            "hc --via requires a native .exe launcher on Windows: {}",
-            resolved.display()
-        );
-        return Ok(std::path::absolute(resolved)?);
-    }
-
-    let current = std::env::current_exe()?;
-    if let Some(invoked) = std::env::args_os().next()
-        && let Ok(path) = which::which(invoked)
-        && let (Ok(candidate), Ok(actual)) = (path.canonicalize(), current.canonicalize())
-        && candidate == actual
-    {
-        return Ok(std::path::absolute(path)?);
-    }
-    Ok(current)
-}
-
-pub(super) fn via_command(c: &Connection, dt: String, hd_path: Option<&Path>) -> Result<String> {
-    let exe = via_path(registration_executable(hd_path)?)?;
+pub(super) fn via_command(c: &Connection, dt: String) -> Result<String> {
+    let exe = match which::which("hd") {
+        Ok(path)
+            if cfg!(not(windows))
+                || path
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) =>
+        {
+            std::path::absolute(path)?
+        }
+        _ => std::env::current_exe()?,
+    };
+    let exe = via_path(exe)?;
     let via = [
         exe,
         "client".into(),

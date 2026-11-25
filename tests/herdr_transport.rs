@@ -828,20 +828,26 @@ fn client_local_session_only_changes_machine_add_environment() {
     }
 }
 
+fn registration_path(fixture: &Fixture) -> PathBuf {
+    let path = fixture.root.join("registration-bin");
+    fs::create_dir(&path).unwrap();
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(which::which("sh").unwrap(), path.join("sh")).unwrap();
+    path
+}
+
 #[test]
-fn client_registration_uses_explicit_launcher_after_replacement() {
+fn client_registration_uses_hd_from_path_after_replacement() {
     let fixture = Fixture::new();
     let mut server = Running::start(fixture.foreground_server());
     server.ready();
-    let launcher = fixture
-        .root
-        .join(format!("launcher{}", std::env::consts::EXE_SUFFIX));
+    let bin = registration_path(&fixture);
+    let launcher = bin.join(format!("hd{}", std::env::consts::EXE_SUFFIX));
     fs::copy(&fixture.cli, &launcher).unwrap();
-    let relative_launcher = Path::new(".").join(launcher.file_name().unwrap());
     let output = fixture
         .connection("client")
-        .args(["--name", "workbox", "--hd-path"])
-        .arg(&relative_launcher)
+        .args(["--name", "workbox"])
+        .env("PATH", &bin)
         .output()
         .unwrap();
     success(&output);
@@ -869,6 +875,7 @@ fn client_registration_uses_explicit_launcher_after_replacement() {
         .env("HERDR_TEST_FIXTURE_PORT", fixture.port.to_string())
         .env("HOME", &fixture.root)
         .env("USERPROFILE", &fixture.root)
+        .env("PATH", &bin)
         .current_dir(&fixture.root)
         .output()
         .unwrap();
@@ -876,34 +883,21 @@ fn client_registration_uses_explicit_launcher_after_replacement() {
 }
 
 #[test]
-fn client_registration_rejects_missing_launcher() {
-    let fixture = Fixture::new();
-    let output = fixture
-        .connection("client")
-        .args(["--name", "workbox", "--hd-path"])
-        .arg(fixture.root.join("missing-launcher"))
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("Executable not found"));
-    assert!(!fixture.root.join("machine-args").exists());
-}
-
-#[test]
 #[cfg(unix)]
-fn client_registration_accepts_a_launcher_script() {
+fn client_registration_uses_launcher_script_from_path() {
     let fixture = Fixture::new();
     let mut server = Running::start(fixture.foreground_server());
     server.ready();
-    let launcher = fixture.root.join("launcher");
+    let bin = registration_path(&fixture);
+    let launcher = bin.join("hd");
     let escaped = fixture.cli.to_str().unwrap().replace('\'', "'\\''");
     fs::write(&launcher, format!("#!/bin/sh\nexec '{escaped}' \"$@\"\n")).unwrap();
     fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
     success(
         &fixture
             .connection("client")
-            .args(["--name", "workbox", "--hd-path"])
-            .arg(&launcher)
+            .args(["--name", "workbox"])
+            .env("PATH", &bin)
             .output()
             .unwrap(),
     );
@@ -915,40 +909,19 @@ fn client_registration_accepts_a_launcher_script() {
 }
 
 #[test]
-#[cfg(windows)]
-fn client_registration_rejects_batch_launcher() {
-    let fixture = Fixture::new();
-    let launcher = fixture.root.join("launcher.cmd");
-    fs::write(&launcher, "@exit /b 0\r\n").unwrap();
-    let result = fixture
-        .connection("client")
-        .args(["--name", "workbox", "--hd-path"])
-        .arg(&launcher)
-        .output()
-        .unwrap();
-    assert!(!result.status.success());
-    assert!(String::from_utf8_lossy(&result.stderr).contains("native .exe launcher"));
-    assert!(!fixture.root.join("machine-args").exists());
-}
-
-#[test]
 #[cfg(unix)]
-fn client_registration_preserves_invoked_symlink() {
-    let mut fixture = Fixture::new();
+fn client_registration_preserves_path_symlink() {
+    let fixture = Fixture::new();
     let mut server = Running::start(fixture.foreground_server());
     server.ready();
-    let alias = fixture.root.join("stable hd");
+    let bin = registration_path(&fixture);
+    let alias = bin.join("hd");
     std::os::unix::fs::symlink(&fixture.cli, &alias).unwrap();
-    let mut path = vec![fixture.root.clone()];
-    path.extend(std::env::split_paths(
-        &std::env::var_os("PATH").unwrap_or_default(),
-    ));
-    fixture.cli = PathBuf::from("stable hd");
     success(
         &fixture
             .connection("client")
             .args(["--name", "workbox"])
-            .env("PATH", std::env::join_paths(path).unwrap())
+            .env("PATH", &bin)
             .output()
             .unwrap(),
     );
@@ -960,6 +933,32 @@ fn client_registration_preserves_invoked_symlink() {
         )),
         "{args}"
     );
+}
+
+#[test]
+fn client_registration_falls_back_when_hd_not_on_path() {
+    let fixture = Fixture::new();
+    let mut server = Running::start(fixture.foreground_server());
+    server.ready();
+    let bin = registration_path(&fixture);
+    success(
+        &fixture
+            .connection("client")
+            .args(["--name", "workbox"])
+            .env("PATH", &bin)
+            .output()
+            .unwrap(),
+    );
+    let args = fs::read_to_string(fixture.root.join("machine-args")).unwrap();
+    #[cfg(not(windows))]
+    let exe = fixture.cli.canonicalize().unwrap();
+    #[cfg(windows)]
+    let exe = fixture.cli.clone();
+    #[cfg(not(windows))]
+    let quoted = format!("'{}'", exe.to_str().unwrap().replace('\'', "'\\''"));
+    #[cfg(windows)]
+    let quoted = format!("\"{}\"", exe.display());
+    assert!(args.contains(&format!("--via\n{quoted} ")), "{args}");
 }
 
 #[test]
@@ -1154,7 +1153,18 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     connector_process.wait_for_exit();
 
     let mut registration = fixture.connection_with_timeout("client", "30");
-    registration.args(["--name", "scratch"]);
+    registration
+        .args(["--name", "scratch"])
+        .env("PATH", &fixture.root);
+    #[cfg(unix)]
+    registration.env(
+        "PATH",
+        std::env::join_paths([
+            fixture.root.clone(),
+            which::which("sh").unwrap().parent().unwrap().to_path_buf(),
+        ])
+        .unwrap(),
+    );
     gate_connector(&mut registration, "registration");
     let registration = Running::start(registration);
     let registration_process = release_connector(&fixture, "registration");

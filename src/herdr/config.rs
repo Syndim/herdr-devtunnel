@@ -217,12 +217,6 @@ pub(crate) struct ClientArgs {
     pub(crate) name: String,
     #[arg(long, value_parser = parse_session, help = "Local hc session for registration; sets HC_SESSION and removes inherited HC_SOCKET for hc machine add. If omitted, inherits the environment")]
     pub(crate) local_session: Option<String>,
-    #[arg(
-        long,
-        value_name = "PATH",
-        help = "Executable path saved for hc transport (for example, a mise shim)"
-    )]
-    pub(crate) hd_path: Option<PathBuf>,
 }
 
 #[derive(Args)]
