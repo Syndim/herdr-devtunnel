@@ -1211,6 +1211,7 @@ fn server_checks_listed_port_acl_even_when_show_omits_ports() {
 fn server_creates_a_port_from_an_explicit_empty_port_list() {
     for response in [
         r#"{"warning":"No ports found for tunnel."}"#,
+        r#"{"warning":"No ports found for tunnel fixture."}"#,
         r#"{"ports":[]}"#,
     ] {
         let fixture = Fixture::new();
@@ -1259,6 +1260,8 @@ fn server_fails_closed_on_port_list_errors_and_rechecks_after_creation() {
         "null",
         r#"{"ports":null}"#,
         r#"{"warning":"other"}"#,
+        r#"{"warning":"No ports found for tunnel other."}"#,
+        r#"{"warning":"No ports found for tunnel fixture.","error":"failed"}"#,
         r#"{"warning":"No ports found for tunnel.","error":"failed"}"#,
         r#"{"ports":[],"continuationToken":"more"}"#,
         r#"{"ports":[{}]}"#,
