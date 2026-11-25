@@ -48,3 +48,43 @@ bump-version $major="0" $minor="0":
         lockfile.write_bytes(original_lock)
         raise SystemExit(f"Version bump failed: {error}")
     print(f"{version} -> {new_version}")
+
+[doc("Tag the latest origin/master version and push the tag (requires Python 3.11+)")]
+[script("python3")]
+release-tag:
+    import re
+    import subprocess
+    import tomllib
+
+    def git(*args):
+        return subprocess.check_output(["git", *args], text=True).strip()
+
+    fetch_url = git("remote", "get-url", "origin")
+    push_urls = git("remote", "get-url", "--push", "--all", "origin").splitlines()
+    if push_urls != [fetch_url]:
+        raise SystemExit("origin fetch and push URLs differ; refusing to tag a different repository")
+    subprocess.run(["git", "fetch", "--no-tags", "origin", "master"], check=True)
+    commit = git("rev-parse", "FETCH_HEAD^{commit}")
+    manifest = git("show", f"{commit}:Cargo.toml")
+    version = tomllib.loads(manifest)["package"]["version"]
+    if not re.fullmatch(r"(?:0|[1-9][0-9]*)(?:\.(?:0|[1-9][0-9]*)){2}", version):
+        raise SystemExit(f"Expected a MAJOR.MINOR.PATCH package version, got {version!r}")
+    tag = f"v{version}"
+    ref = f"refs/tags/{tag}"
+    local = subprocess.run(["git", "show-ref", "--verify", "--quiet", ref])
+    if local.returncode not in (0, 1):
+        raise SystemExit("Could not check local tags")
+    if local.returncode == 0:
+        raise SystemExit(f"Tag {tag} already exists locally; nothing was pushed")
+    if git("ls-remote", "--tags", "origin", ref):
+        raise SystemExit(f"Tag {tag} already exists on origin; nothing was pushed")
+    master = git("ls-remote", "--heads", "origin", "refs/heads/master").split()
+    if len(master) != 2 or master[0] != commit:
+        raise SystemExit("origin/master is missing or changed; rerun the recipe")
+    subprocess.run(["git", "tag", "-a", tag, commit, "-m", tag], check=True)
+    tag_object = git("rev-parse", ref)
+    try:
+        subprocess.run(["git", "push", "origin", f"{tag_object}:{ref}"], check=True)
+    except subprocess.CalledProcessError:
+        raise SystemExit(f"Push failed or was not confirmed. Local tag {tag} remains; check origin before removing it and retrying.")
+    print(f"Pushed {tag} for {commit}")
