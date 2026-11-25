@@ -96,14 +96,14 @@ jobs:
           fi
           echo "commit=$head_commit" >> "$GITHUB_OUTPUT"
 
-  ci:
+  release-ci:
     needs: validate
     permissions:
       contents: read
     uses: ./.github/workflows/ci.yml
 
   build:
-    needs: [validate, ci]
+    needs: [validate, release-ci]
     strategy:
       fail-fast: false
       matrix:
@@ -169,7 +169,7 @@ jobs:
           if-no-files-found: error
 
   package-check:
-    needs: [validate, ci]
+    needs: [validate, release-ci]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     outputs:
@@ -198,7 +198,7 @@ jobs:
           echo "checksum=${checksum%% *}" >> "$GITHUB_OUTPUT"
 
   draft:
-    needs: [validate, ci, build, package-check]
+    needs: [validate, release-ci, build, package-check]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     environment: release
@@ -368,7 +368,7 @@ jobs:
           PY
 
   publish:
-    needs: [validate, ci, build, package-check, draft]
+    needs: [validate, release-ci, build, package-check, draft]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     environment: release
