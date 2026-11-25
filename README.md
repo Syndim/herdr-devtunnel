@@ -108,7 +108,9 @@ hd client connect --name remote-box --tunnel example-tunnel.inc1 --session remot
 hd client reconnect --all --role client --local-session local-desktop
 ```
 
-Registration pins the executable paths of `hd` and `devtunnel`; keep them stable. If either executable is renamed or relocated, check the registrations in the same local core used for registration, remove only the affected machine, then register it again. For the `local-desktop` example above, select that core and inspect the list (POSIX shell):
+Registration saves absolute executable paths for `hd` and `devtunnel`. For `hd`, it preserves the invoked path, including symlinks, when it can identify it; otherwise it uses the running executable's path. To use a stable launcher that starts `hd` as a separate process (such as a mise shim), specify it explicitly with `--hd-path`, for example `hd client connect --name workbox --tunnel agent-host.inc1 --hd-path "$HOME/.local/share/mise/shims/hd"` (on Windows, use the actual path to the `hd.exe` shim). The launcher must work in the local core's environment and select the intended `hd` version; on Windows it must be a native `.exe`, not a `.cmd` shim. Keep the saved executable and its parent directories protected from untrusted modification: changing the launcher changes what the local core executes. Existing registrations are not changed automatically. `client reconnect --all` recognizes symlinks to the current executable but cannot identify launchers that execute a separate binary.
+
+If a saved path is renamed or relocated, check the registrations in the same local core used for registration, remove only the affected machine, then register it again. For the `local-desktop` example above, select that core and inspect the list (POSIX shell):
 
 ```sh
 (unset HC_SOCKET; export HC_SESSION=local-desktop; hc machine ls)

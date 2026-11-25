@@ -15,7 +15,7 @@ pub(crate) async fn add(args: ClientArgs) -> Result<()> {
     check_via_contract(&hc).await?;
     #[cfg(not(windows))]
     client_shell()?;
-    let via = super::transport::via_command(&c, dt)?;
+    let via = super::transport::via_command(&c, dt, args.hd_path.as_deref())?;
     eprintln!(
         "[herdr] Registering {} using a private tunnel, not SSH",
         args.name
