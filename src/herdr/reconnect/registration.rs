@@ -9,6 +9,12 @@ struct Machine {
     target: String,
     #[serde(default)]
     via: bool,
+    #[serde(default)]
+    session: Option<String>,
+    #[serde(default)]
+    temporary: bool,
+    #[serde(default)]
+    id: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -60,6 +66,107 @@ pub(super) async fn reconnect_clients(args: &Arguments) -> Result<()> {
         failures.join("\n")
     );
     Ok(())
+}
+
+pub(super) async fn reregister_clients(args: &Arguments) -> Result<()> {
+    let machines: Machines =
+        serde_json::from_value(api::call_local(args, "machine.list", json!({})).await?)
+            .context("Invalid hc machine list")?;
+    let current = crate::herdr::validation::via_path(std::env::current_exe()?.canonicalize()?)?;
+    #[cfg(windows)]
+    crate::diagnostics::check_via_contract(&crate::herdr::validation::executable(&args.hc)?)
+        .await?;
+    let mut failures = Vec::new();
+    let mut count = 0;
+    for machine in machines.machines {
+        if !machine.via {
+            continue;
+        }
+        let Some(target) = replacement_target(&machine.target, &current) else {
+            continue;
+        };
+        count += 1;
+        let result = async {
+            let removed =
+                api::call_local(args, "machine.rm", json!({"machine": machine.name})).await.context("Removal failed or was not confirmed; the machine may have been removed; check the machine list")?;
+            ensure!(
+                removed["removed"] == machine.name,
+                "hc did not confirm removal; check machine list before retrying"
+            );
+            let added = api::call_local(
+                args,
+                "machine.add",
+                json!({
+                    "name": machine.name,
+                    "via": target,
+                    "session": machine.session,
+                    "temporary": machine.temporary,
+                }),
+            )
+            .await
+            .context(
+                "Registration failed after removal; the machine may no longer be registered",
+            )?;
+            if let Some(id) = machine.id.as_deref().filter(|id| !id.is_empty()) {
+                ensure!(added["id"] == id, "Machine was re-registered but its remote core identity changed or could not be verified; inspect it before use");
+            }
+            Ok::<_, anyhow::Error>(())
+        }
+        .await;
+        match result {
+            Ok(()) => println!("Machine '{}' re-registered.", machine.name),
+            Err(error) => {
+                eprintln!("[herdr] Machine '{}': {error:#}", machine.name);
+                eprintln!("[herdr] Original transport: {}", machine.target);
+                failures.push(format!("{}: {error:#}", machine.name));
+            }
+        }
+    }
+    if count == 0 {
+        println!("No registered Herdr dev-tunnel machines found.");
+    }
+    ensure!(
+        failures.is_empty(),
+        "Failed to re-register {} machine(s):\n{}",
+        failures.len(),
+        failures.join("\n")
+    );
+    Ok(())
+}
+
+fn replacement_target(target: &str, current: &str) -> Option<String> {
+    #[cfg(not(windows))]
+    let mut words = unix_transport_words(target)?;
+    #[cfg(windows)]
+    let mut words = windows_transport_words(target)?;
+    if !valid_transport_words(&words) {
+        return None;
+    }
+    let path = Path::new(&words[0]);
+    let name = path.file_name()?.to_str()?;
+    let named_hd = if cfg!(windows) {
+        name.eq_ignore_ascii_case("hd.exe")
+    } else {
+        name == "hd"
+    };
+    if !path.is_absolute() || (!named_hd && !same_executable(path, Path::new(current))) {
+        return None;
+    }
+    words[0] = current.to_owned();
+    if words.get(1).is_some_and(|word| word == "connect") {
+        words.splice(1..2, ["client".to_string(), "transport".to_string()]);
+    }
+    #[cfg(not(windows))]
+    let quote = shell_quote;
+    #[cfg(windows)]
+    let quote = crate::herdr::validation::windows_quote;
+    Some(
+        words
+            .iter()
+            .map(|word| quote(word))
+            .collect::<Vec<_>>()
+            .join(" "),
+    )
 }
 
 use std::path::Path;
@@ -195,7 +302,22 @@ pub(super) fn is_our_transport(target: &str, current_exe: &Path) -> bool {
 }
 
 fn is_our_transport_words(words: &[String], current_exe: &Path) -> bool {
-    let Some((executable, args)) = words.split_first() else {
+    if !valid_transport_words(words) {
+        return false;
+    }
+    let path = Path::new(&words[0]);
+    if !path.is_absolute() || !same_executable(path, current_exe) {
+        eprintln!(
+            "[herdr] Skipping transport: executable {} is missing or does not resolve to the current executable",
+            path.display()
+        );
+        return false;
+    }
+    true
+}
+
+fn valid_transport_words(words: &[String]) -> bool {
+    let Some((_, args)) = words.split_first() else {
         return false;
     };
     let options = if args.len() >= 4 && args[..3] == ["client", "transport", "--tunnel"] {
@@ -227,14 +349,6 @@ fn is_our_transport_words(words: &[String], current_exe: &Path) -> bool {
             return false;
         }
         seen |= bit;
-    }
-    let path = Path::new(executable);
-    if !path.is_absolute() || !same_executable(path, current_exe) {
-        eprintln!(
-            "[herdr] Skipping transport: executable {} is missing or does not resolve to the current executable",
-            path.display()
-        );
-        return false;
     }
     true
 }
@@ -396,6 +510,40 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn reregister_rewrites_legacy_transport_and_rejects_unrelated_commands() {
+        #[cfg(not(windows))]
+        let old = "'/missing/hd' 'connect' '--tunnel' 'abc.use2' '--session' 'work'";
+        #[cfg(windows)]
+        let old =
+            "\"C:\\missing\\hd.exe\" \"connect\" \"--tunnel\" \"abc.use2\" \"--session\" \"work\"";
+        let current = std::env::current_exe().unwrap();
+        let rewritten = replacement_target(old, current.to_str().unwrap()).unwrap();
+        #[cfg(not(windows))]
+        let words = unix_transport_words(&rewritten).unwrap();
+        #[cfg(windows)]
+        let words = windows_transport_words(&rewritten).unwrap();
+        assert_eq!(
+            &words[1..],
+            [
+                "client",
+                "transport",
+                "--tunnel",
+                "abc.use2",
+                "--session",
+                "work"
+            ]
+        );
+        assert_eq!(words[0], current.to_str().unwrap());
+        assert!(
+            replacement_target(
+                &old.replace("connect", "unrelated"),
+                current.to_str().unwrap()
+            )
+            .is_none()
+        );
     }
 
     #[test]
