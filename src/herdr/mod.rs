@@ -71,11 +71,13 @@ mod tests {
         for value in [
             json!({"ports": []}),
             json!({"warning": "No ports found for tunnel."}),
+            json!({"warning": "No ports found for tunnel fixture."}),
+            json!({"warning": "No ports found for tunnel FIXTURE."}),
         ] {
-            assert!(port_list(&value).unwrap().is_empty());
+            assert!(port_list(&value, "fixture.use2").unwrap().is_empty());
         }
         let list = json!({"ports": [{"portNumber": 43821, "protocol": "auto"}]});
-        validate_ports(port_list(&list).unwrap(), 43821).unwrap();
+        validate_ports(port_list(&list, "fixture.use2").unwrap(), 43821).unwrap();
         for value in [
             json!({}),
             json!(null),
@@ -83,11 +85,16 @@ mod tests {
             json!({"ports": null}),
             json!({"ports": {}}),
             json!({"warning": "other"}),
+            json!({"warning": "No ports found for tunnel other."}),
+            json!({"warning": "No ports found for tunnel ."}),
+            json!({"warning": "No ports found for tunnel fixture.use2."}),
+            json!({"warning": "No ports found for tunnel fixture. unexpected"}),
+            json!({"warning": "No ports found for tunnel fixture.", "error": "failed"}),
             json!({"warning": "No ports found for tunnel.", "ports": []}),
             json!({"warning": "No ports found for tunnel.", "error": "failed"}),
             json!({"ports": [], "continuationToken": "more"}),
         ] {
-            assert!(port_list(&value).is_err(), "{value}");
+            assert!(port_list(&value, "fixture.use2").is_err(), "{value}");
         }
         for ports in [
             json!([{}]),

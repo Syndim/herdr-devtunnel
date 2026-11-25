@@ -67,11 +67,20 @@ pub(crate) fn validate_tunnel(value: &Value, port: u16) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn port_list(value: &Value) -> Result<&[Value]> {
+pub(crate) fn port_list<'a>(value: &'a Value, tunnel: &str) -> Result<&'a [Value]> {
     let object = value.as_object().context("Unrecognized tunnel port list")?;
     match (object.get("ports"), object.get("warning"), object.len()) {
         (Some(Value::Array(ports)), None, 1) => Ok(ports),
-        (None, Some(Value::String(warning)), 1) if warning == "No ports found for tunnel." => {
+        (None, Some(Value::String(warning)), 1)
+            if warning == "No ports found for tunnel."
+                || warning
+                    .strip_prefix("No ports found for tunnel ")
+                    .and_then(|id| id.strip_suffix('.'))
+                    .is_some_and(|id| {
+                        !id.is_empty()
+                            && id.eq_ignore_ascii_case(tunnel.split('.').next().unwrap_or(""))
+                    }) =>
+        {
             Ok(&[])
         }
         _ => bail!("Unrecognized tunnel port list"),
@@ -125,7 +134,7 @@ pub(crate) async fn validate_private_tunnel(
         .await
         .context("Failed to retrieve tunnel port list")?;
     let list: Value = serde_json::from_str(&response).context("Invalid tunnel port list JSON")?;
-    let ports = port_list(&list)?;
+    let ports = port_list(&list, &c.tunnel)?;
     validate_ports(ports, c.port)?;
     let has_port = !ports.is_empty();
     ensure!(
