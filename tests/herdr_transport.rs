@@ -72,18 +72,22 @@ impl Fixture {
             "client" => command.args(["client", "connect"]),
             "connect" => command.args(["client", "transport"]),
             "reconnect" | "r" => command.args(["client", "reconnect"]),
+            "re-register" => command.args(["client", "re-register"]),
             "stop" => command.args(["server", "stop"]),
             "status" => command.args(["server", "status"]),
             _ => command.arg(subcommand),
         };
-        if !matches!(subcommand, "status" | "stop" | "reconnect" | "r") {
+        if !matches!(
+            subcommand,
+            "status" | "stop" | "reconnect" | "r" | "re-register"
+        ) {
             command
                 .arg("--hc")
                 .arg(&self.hc)
                 .arg("--devtunnel")
                 .arg(devtunnel);
         }
-        if matches!(subcommand, "reconnect" | "r") {
+        if matches!(subcommand, "reconnect" | "r" | "re-register") {
             command
                 .arg("--hc")
                 .arg(&self.hc)
@@ -105,7 +109,7 @@ impl Fixture {
         ] {
             command.env_remove(key);
         }
-        if !matches!(subcommand, "reconnect" | "r") {
+        if !matches!(subcommand, "reconnect" | "r" | "re-register") {
             command.env_remove("HERDR_TEST_FIXTURE_API");
         }
         command
@@ -828,71 +832,20 @@ fn client_local_session_only_changes_machine_add_environment() {
     }
 }
 
-fn registration_path(fixture: &Fixture) -> PathBuf {
-    let path = fixture.root.join("registration-bin");
-    fs::create_dir(&path).unwrap();
+#[test]
+fn client_registration_uses_current_executable_not_path_hd() {
+    let fixture = Fixture::new();
+    let mut server = Running::start(fixture.foreground_server());
+    server.ready();
+    let bin = fixture.root.join("registration-bin");
+    fs::create_dir(&bin).unwrap();
+    fs::copy(
+        &fixture.hc,
+        bin.join(format!("hd{}", std::env::consts::EXE_SUFFIX)),
+    )
+    .unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::symlink(which::which("sh").unwrap(), path.join("sh")).unwrap();
-    path
-}
-
-#[test]
-fn client_registration_uses_hd_from_path_after_replacement() {
-    let fixture = Fixture::new();
-    let mut server = Running::start(fixture.foreground_server());
-    server.ready();
-    let bin = registration_path(&fixture);
-    let launcher = bin.join(format!("hd{}", std::env::consts::EXE_SUFFIX));
-    fs::copy(&fixture.cli, &launcher).unwrap();
-    let output = fixture
-        .connection("client")
-        .args(["--name", "workbox"])
-        .env("PATH", &bin)
-        .output()
-        .unwrap();
-    success(&output);
-    let args = fs::read_to_string(fixture.root.join("machine-args")).unwrap();
-    let via = args.split("--via\n").nth(1).unwrap().trim_end();
-    #[cfg(not(windows))]
-    let quoted_launcher = format!("'{}'", launcher.to_str().unwrap().replace('\'', "'\\''"));
-    #[cfg(windows)]
-    let quoted_launcher = format!("\"{}\"", launcher.display());
-    assert!(via.starts_with(&quoted_launcher), "{via}");
-    fs::remove_file(&launcher).unwrap();
-    fs::copy(&fixture.cli, &launcher).unwrap();
-    let output = Command::new(&fixture.hc)
-        .args([
-            "machine",
-            "add",
-            "--name",
-            "workbox",
-            "--session",
-            "work",
-            "--via",
-            via,
-        ])
-        .env("HERDR_TEST_FIXTURE_ROOT", &fixture.root)
-        .env("HERDR_TEST_FIXTURE_PORT", fixture.port.to_string())
-        .env("HOME", &fixture.root)
-        .env("USERPROFILE", &fixture.root)
-        .env("PATH", &bin)
-        .current_dir(&fixture.root)
-        .output()
-        .unwrap();
-    success(&output);
-}
-
-#[test]
-#[cfg(unix)]
-fn client_registration_uses_launcher_script_from_path() {
-    let fixture = Fixture::new();
-    let mut server = Running::start(fixture.foreground_server());
-    server.ready();
-    let bin = registration_path(&fixture);
-    let launcher = bin.join("hd");
-    let escaped = fixture.cli.to_str().unwrap().replace('\'', "'\\''");
-    fs::write(&launcher, format!("#!/bin/sh\nexec '{escaped}' \"$@\"\n")).unwrap();
-    fs::set_permissions(&launcher, fs::Permissions::from_mode(0o700)).unwrap();
+    std::os::unix::fs::symlink(which::which("sh").unwrap(), bin.join("sh")).unwrap();
     success(
         &fixture
             .connection("client")
@@ -902,58 +855,7 @@ fn client_registration_uses_launcher_script_from_path() {
             .unwrap(),
     );
     let args = fs::read_to_string(fixture.root.join("machine-args")).unwrap();
-    assert!(
-        args.contains(&launcher.to_str().unwrap().replace('\'', "'\\''")),
-        "{args}"
-    );
-}
-
-#[test]
-#[cfg(unix)]
-fn client_registration_preserves_path_symlink() {
-    let fixture = Fixture::new();
-    let mut server = Running::start(fixture.foreground_server());
-    server.ready();
-    let bin = registration_path(&fixture);
-    let alias = bin.join("hd");
-    std::os::unix::fs::symlink(&fixture.cli, &alias).unwrap();
-    success(
-        &fixture
-            .connection("client")
-            .args(["--name", "workbox"])
-            .env("PATH", &bin)
-            .output()
-            .unwrap(),
-    );
-    let args = fs::read_to_string(fixture.root.join("machine-args")).unwrap();
-    assert!(
-        args.contains(&format!(
-            "--via\n'{}' 'client' 'transport'",
-            alias.to_str().unwrap().replace('\'', "'\\''")
-        )),
-        "{args}"
-    );
-}
-
-#[test]
-fn client_registration_falls_back_when_hd_not_on_path() {
-    let fixture = Fixture::new();
-    let mut server = Running::start(fixture.foreground_server());
-    server.ready();
-    let bin = registration_path(&fixture);
-    success(
-        &fixture
-            .connection("client")
-            .args(["--name", "workbox"])
-            .env("PATH", &bin)
-            .output()
-            .unwrap(),
-    );
-    let args = fs::read_to_string(fixture.root.join("machine-args")).unwrap();
-    #[cfg(not(windows))]
     let exe = fixture.cli.canonicalize().unwrap();
-    #[cfg(windows)]
-    let exe = fixture.cli.clone();
     #[cfg(not(windows))]
     let quoted = format!("'{}'", exe.to_str().unwrap().replace('\'', "'\\''"));
     #[cfg(windows)]
@@ -1170,7 +1072,7 @@ fn native_transport_and_setup_use_only_scratch_processes() {
     let registration_process = release_connector(&fixture, "registration");
     success(&registration.output());
     let registration_args = fs::read_to_string(fixture.root.join("machine-args")).unwrap();
-    let exe = &fixture.cli;
+    let exe = fixture.cli.canonicalize().unwrap();
     #[cfg(not(windows))]
     let expected_via = format!(
         "--via\n'{}' 'client' 'transport'",
@@ -2412,6 +2314,82 @@ fn reconnected_names(fixture: &Fixture) -> Vec<String> {
         .filter(|request| request["method"] == "machine.connect")
         .map(|request| request["params"]["machine"].as_str().unwrap().to_string())
         .collect()
+}
+
+#[test]
+fn reregister_replaces_hd_paths_and_continues_after_failure() {
+    let fixture = Fixture::new();
+    let old = fixture
+        .root
+        .join("removed-version")
+        .join(format!("hd{}", std::env::consts::EXE_SUFFIX));
+    #[cfg(not(windows))]
+    let target = format!(
+        "'{}' 'client' 'transport' '--tunnel' 'fixture.use2' '--port' '12345' '--session' 'work' '--timeout' '45' '--devtunnel' 'devtunnel'",
+        old.to_str().unwrap().replace('\'', "'\\''")
+    );
+    #[cfg(windows)]
+    let target = format!(
+        "\"{}\" \"client\" \"transport\" \"--tunnel\" \"fixture.use2\" \"--port\" \"12345\" \"--session\" \"work\" \"--timeout\" \"45\" \"--devtunnel\" \"devtunnel\"",
+        old.display()
+    );
+    let unrelated = target.replace("client", "other");
+    let machines = serde_json::json!({"machines": [
+        {"name":"offline", "target": target, "via":true, "session":"work", "temporary":true},
+        {"name":"online", "target": target, "via":true, "session":"work", "temporary":false, "id":"expected-core"},
+        {"name":"changed", "target": target, "via":true, "session":"work", "temporary":false, "id":"expected-core"},
+        {"name":"ssh", "target": target, "via":false},
+        {"name":"other", "target": unrelated, "via":true}
+    ]});
+    fs::write(
+        fixture.root.join("api-machines"),
+        serde_json::to_vec(&machines).unwrap(),
+    )
+    .unwrap();
+    let output = fixture
+        .command("re-register")
+        .args(["--local-session", "desktop"])
+        .env("HC_SOCKET", "wrong")
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Registration failed after removal"));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("remote core identity changed"));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("online"));
+    assert_eq!(
+        fs::read_to_string(fixture.root.join("api-HC_SOCKET")).unwrap(),
+        "None"
+    );
+    let calls = fs::read_to_string(fixture.root.join("api-calls")).unwrap();
+    let requests: Vec<serde_json::Value> = calls
+        .lines()
+        .filter_map(|line| serde_json::from_str(line).ok())
+        .collect();
+    let mutations: Vec<_> = requests
+        .iter()
+        .filter(|v| matches!(v["method"].as_str(), Some("machine.rm" | "machine.add")))
+        .collect();
+    assert_eq!(mutations.len(), 6, "{calls}");
+    assert_eq!(mutations[0]["params"]["machine"], "offline");
+    assert_eq!(mutations[1]["params"]["name"], "offline");
+    assert_eq!(mutations[1]["params"]["temporary"], true);
+    assert_eq!(mutations[1]["params"]["session"], "work");
+    assert_eq!(mutations[2]["params"]["machine"], "online");
+    assert_eq!(mutations[3]["params"]["name"], "online");
+    assert_eq!(mutations[3]["params"]["temporary"], false);
+    assert_eq!(mutations[4]["params"]["machine"], "changed");
+    assert_eq!(mutations[5]["params"]["name"], "changed");
+    let via = mutations[3]["params"]["via"].as_str().unwrap();
+    let current = fixture.cli.canonicalize().unwrap();
+    #[cfg(not(windows))]
+    let expected = current.to_str().unwrap().replace('\'', "'\\''");
+    #[cfg(windows)]
+    let expected = current.to_str().unwrap().to_string();
+    assert!(via.contains(&expected), "{via}");
+    assert!(
+        via.contains("fixture.use2") && via.contains("12345") && via.contains("devtunnel"),
+        "{via}"
+    );
 }
 
 #[test]

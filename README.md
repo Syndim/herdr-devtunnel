@@ -108,7 +108,9 @@ hd client connect --name remote-box --tunnel example-tunnel.inc1 --session remot
 hd client reconnect --all --role client --local-session local-desktop
 ```
 
-Registration saves absolute executable paths for `hd` and `devtunnel`. For `hd`, it uses the first `hd` found on `PATH` without resolving symlinks; if none is found, it uses the running executable's path. On Windows, the `PATH` entry must be an `.exe`; otherwise it falls back to the running executable. To use a mise shim, ensure its directory appears before version-specific `hd` directories on `PATH` when registering. The selected executable may differ from the one running the registration command and must work in the local core's environment. Keep it and its parent directories protected from untrusted modification. Existing registrations are not changed automatically. `client reconnect --all` recognizes symlinks to the current executable but cannot identify launchers that execute a separate binary.
+Registration saves the canonical path of the running `hd` and the executable path of `devtunnel`. After upgrading or relocating `hd`, run `hd client re-register` to replace recognized `hd` transport registrations with the current executable path. Use `--local-session local-desktop` to select the local core (the default is `default`; inherited `HC_SOCKET` is cleared, but an `hc` configured socket can override session selection). The command recognizes absolute paths named `hd` (or `hd.exe` on Windows) with the expected transport arguments, including missing old executables, as well as other paths resolving to the current executable; it cannot prove that a missing path was actually `hd`. Missing or relocated executables with other names are skipped.
+
+**Re-registration removes each matching machine before adding it again.** If the remote is unreachable or adding fails, that machine may remain unregistered; the command reports the original transport and continues with the others. Remote terminals are not stopped, but local connections and viewers are closed. The existing remote session, temporary flag, and transport arguments are retained. Run this only when you intend to replace all matching registrations in the selected core.
 
 If a saved path is renamed or relocated, check the registrations in the same local core used for registration, remove only the affected machine, then register it again. For the `local-desktop` example above, select that core and inspect the list (POSIX shell):
 
@@ -122,7 +124,7 @@ A socket configured in `hc` may override this selection; verify the core and its
 (unset HC_SOCKET; export HC_SESSION=local-desktop; hc machine rm remote-box)
 ```
 
-In particular, reconnect cannot repair a registration whose executable has been renamed or relocated and whose pinned path no longer exists. The client command does not overwrite or remove registrations. Do not repeatedly re-register a machine merely because it is reconnecting.
+In particular, `client reconnect` cannot repair a registration whose executable has been renamed or relocated and whose pinned path no longer exists. `client connect` does not overwrite or remove registrations; `client re-register` explicitly removes and adds matching registrations. Do not repeatedly re-register a machine merely because it is reconnecting.
 
 ## Agent status
 

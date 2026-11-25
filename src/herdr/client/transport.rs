@@ -7,18 +7,7 @@ use crate::herdr::validation::windows_quote;
 use anyhow::Result;
 
 pub(super) fn via_command(c: &Connection, dt: String) -> Result<String> {
-    let exe = match which::which("hd") {
-        Ok(path)
-            if cfg!(not(windows))
-                || path
-                    .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) =>
-        {
-            std::path::absolute(path)?
-        }
-        _ => std::env::current_exe()?,
-    };
-    let exe = via_path(exe)?;
+    let exe = via_path(std::env::current_exe()?.canonicalize()?)?;
     let via = [
         exe,
         "client".into(),

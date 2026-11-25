@@ -51,6 +51,8 @@ pub(crate) enum ClientCommands {
     /// Reconnect managed servers and registered private-tunnel machines.
     #[command(alias = "r")]
     Reconnect(crate::herdr::reconnect::Arguments),
+    /// Replace saved hd transport paths with the current executable.
+    ReRegister(crate::herdr::reconnect::ReRegisterArguments),
     /// Internal transport used by hc machine registrations.
     #[command(hide = true)]
     Transport(ConnectArgs),
@@ -102,6 +104,9 @@ impl Commands {
                 Self::Client {
                     command: ClientCommands::Reconnect(args),
                 } => crate::herdr::reconnect::run(args).await,
+                Self::Client {
+                    command: ClientCommands::ReRegister(args),
+                } => crate::herdr::reconnect::reregister(args).await,
                 Self::Client {
                     command: ClientCommands::Transport(args),
                 } => crate::herdr::server::connect(args).await,

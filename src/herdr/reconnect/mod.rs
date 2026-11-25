@@ -32,6 +32,29 @@ pub struct Arguments {
     pub(super) timeout: u64,
 }
 
+#[derive(Args)]
+pub struct ReRegisterArguments {
+    /// Local hc session containing the remote machine registrations.
+    #[arg(long, visible_alias = "local-session", default_value = "default", value_parser = parse_session)]
+    session: String,
+    #[arg(long, default_value = "hc")]
+    hc: PathBuf,
+    /// Maximum seconds for each local hc API call.
+    #[arg(long, default_value_t = 90, value_parser = clap::value_parser!(u64).range(1..=600))]
+    timeout: u64,
+}
+
+pub(crate) async fn reregister(args: ReRegisterArguments) -> Result<()> {
+    let args = Arguments {
+        all: true,
+        role: Role::Client,
+        session: args.session,
+        hc: args.hc,
+        timeout: args.timeout,
+    };
+    registration::reregister_clients(&args).await
+}
+
 pub(crate) async fn run(args: Arguments) -> Result<()> {
     let mut failures = Vec::new();
     if args.role != Role::Client

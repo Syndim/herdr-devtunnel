@@ -355,6 +355,20 @@ fn main() {
                                 panic!("{error}");
                             }
                         })
+                    } else if line.contains("\"method\":\"machine.rm\"") {
+                        let name = line.split("\"machine\":\"").nth(1).unwrap().split('"').next().unwrap();
+                        format!("{{\"removed\":\"{name}\"}}")
+                    } else if line.contains("\"method\":\"machine.add\"") {
+                        if line.contains("\"name\":\"offline\"") {
+                            println!("{{\"jsonrpc\":\"2.0\",\"id\":{id},\"error\":{{\"code\":-32000,\"message\":\"unreachable\"}}}}");
+                            std::io::stdout().flush().unwrap();
+                            continue;
+                        }
+                        if line.contains("\"name\":\"changed\"") {
+                            "{\"id\":\"different-core\"}".into()
+                        } else {
+                            "{\"id\":\"expected-core\"}".into()
+                        }
                     } else if line.contains("\"method\":\"machine.connect\"") {
                         if line.contains("\"machine\":\"slow\"") {
                             thread::sleep(Duration::from_secs(4));
