@@ -124,10 +124,13 @@ fn hook_input_write_only_ignores_broken_pipe_outside_herdr() {
 
 #[test]
 fn child_event_does_not_open_or_write_a_terminal() {
-    let output = hook(r#"{"agentId":"child"}"#, true);
-    assert!(output.status.success(), "{output:?}");
-    assert!(output.stdout.is_empty());
-    assert!(output.stderr.is_empty());
+    for key in ["agentId", "agent_id"] {
+        let payload = serde_json::json!({key: "child", "stopReason": "end_turn"});
+        let output = hook(&payload.to_string(), true);
+        assert!(output.status.success(), "{output:?}");
+        assert!(output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
 }
 
 #[test]
@@ -143,9 +146,9 @@ fn permission_check_does_not_open_or_write_a_terminal() {
 }
 
 #[test]
-fn foreground_stop_does_not_open_or_write_a_terminal() {
+fn unrecognized_stop_and_non_exit_session_end_do_not_write_a_terminal() {
     for (event, input) in [
-        ("agentStop", r#"{"stopReason":"end_turn"}"#),
+        ("agentStop", r#"{"stopReason":"unknown"}"#),
         ("sessionEnd", r#"{"reason":"complete"}"#),
     ] {
         let output = hook_event(event, input, true);
@@ -289,6 +292,7 @@ fn installs_user_hooks_without_changing_other_configuration() {
     assert_eq!(config["version"], 1);
     let hooks = config["hooks"].as_object().unwrap();
     assert_eq!(hooks.len(), 9);
+    assert!(hooks.contains_key("agentStop"));
     assert!(!hooks.contains_key("sessionIdle"));
     for (event, entries) in hooks {
         let entries = entries.as_array().unwrap();

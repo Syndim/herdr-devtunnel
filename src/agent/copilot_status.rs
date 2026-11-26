@@ -74,8 +74,16 @@ fn sequence(event: Event, payload: &Value) -> Result<Option<String>> {
         | Event::PostToolUseFailure => "working",
         // This fires before auto-approval, not when a user prompt is displayed.
         Event::PermissionRequest => return Ok(None),
-        // A foreground turn can stop while attached background work is running.
-        Event::AgentStop => return Ok(None),
+        // The CLI hook reports foreground completion. SessionIdle can report
+        // when attached background work has also finished.
+        Event::AgentStop => match payload
+            .get("stopReason")
+            .or_else(|| payload.get("stop_reason"))
+            .and_then(Value::as_str)
+        {
+            Some("end_turn") => "done",
+            _ => return Ok(None),
+        },
         Event::SessionIdle if payload.get("aborted") == Some(&Value::Bool(true)) => "idle",
         Event::SessionIdle => "done",
         Event::ErrorOccurred => "error",
@@ -153,12 +161,20 @@ mod tests {
     }
 
     #[test]
-    fn foreground_stop_does_not_report_background_work_as_complete() {
-        assert!(
-            sequence(Event::AgentStop, &json!({"stopReason": "end_turn"}))
-                .unwrap()
-                .is_none()
-        );
+    fn root_agent_stop_reports_foreground_completion() {
+        for key in ["stopReason", "stop_reason"] {
+            assert_eq!(
+                sequence(Event::AgentStop, &json!({key: "end_turn"})).unwrap(),
+                Some("\x1b]7501;app=copilot:state=done\x1b\\".into())
+            );
+        }
+        for payload in [json!({}), json!({"stopReason": "unknown"})] {
+            assert!(sequence(Event::AgentStop, &payload).unwrap().is_none());
+        }
+    }
+
+    #[test]
+    fn session_end_ignores_non_exit_reasons_and_aborted_idle_reports_idle() {
         for reason in ["complete", "abort", "timeout", "error"] {
             assert!(
                 sequence(Event::SessionEnd, &json!({"reason": reason}))
